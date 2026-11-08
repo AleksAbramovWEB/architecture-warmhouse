@@ -1,0 +1,59 @@
+@startuml c4-l2-containers-events
+!pragma layout smetana
+!include <C4/C4_Container>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L2 / Containers: команды, события и устройства
+
+System_Ext(edge, "Устройства / домашний шлюз", "Комплекты партнёров. Исходящее MQTT-соединение; для локальных протоколов используется шлюз комплекта.")
+System_Boundary(platform, "SaaS «Тёплый дом»") {
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+Container(heating, "Отопление", "Java 21 / Spring Framework / REST", "Включение/выключение отопления; команды и подтверждённое состояние.")
+Container(lighting, "Освещение", "Java 21 / Spring Framework / REST", "Включение/выключение света; команды и подтверждённое состояние.")
+Container(gates, "Ворота", "Java 21 / Spring Framework / REST", "Открытие/закрытие, запирание/отпирание; контроль допустимых переходов.")
+Container(video, "Видеонаблюдение", "Java 21 / Spring Framework / REST", "Авторизованные сессии просмотра; управление запуском потока; без видеоархива.")
+Container(telemetry, "Телеметрия", "Java 21 / Spring Framework / REST", "Текущие и исторические измерения, время и качество данных.")
+Container(automation, "Сценарии", "Java 21 / Spring Framework / REST", "Редактор правил, триггеры, исполнение действий от имени владельца дома.")
+Container(integration, "Интеграция с устройствами", "Java 21 / Spring Framework / AMQP / MQTT", "Адаптеры, нормализация, привязка соединений и доставка команд.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / AMQP 0-9-1 / TLS", "Durable exchanges и очереди потребителей; отдельные command, lifecycle, telemetry маршруты; retry и DLQ.")
+ContainerQueue(mqtt, "Брокер устройств", "MQTT 5 / TLS", "mTLS-идентификация устройств, ACL на устройство и дом; bootstrap доступ отдельно.")
+}
+Rel(heating, bus, "Публикует CommandRequested.v1", "AMQP")
+Rel(bus, heating, "Его CommandResult.v1 / DeviceStateReported.v1", "AMQP / отдельная очередь")
+Rel(lighting, bus, "Публикует CommandRequested.v1", "AMQP")
+Rel(bus, lighting, "Его CommandResult.v1 / DeviceStateReported.v1", "AMQP / отдельная очередь")
+Rel(gates, bus, "Публикует CommandRequested.v1", "AMQP")
+Rel(bus, gates, "Его CommandResult.v1 / DeviceStateReported.v1", "AMQP / отдельная очередь")
+Rel(video, bus, "Публикует CommandRequested.v1", "AMQP")
+Rel(bus, video, "Его CommandResult.v1 / DeviceStateReported.v1", "AMQP / отдельная очередь")
+Rel(devices, bus, "DeviceClaimRequested / DeviceRegistered / DeviceRevoked.v1", "AMQP / outbox")
+Rel(bus, devices, "DeviceClaimVerified / DeviceClaimFailed.v1", "AMQP")
+Rel(bus, integration, "Команды и жизненный цикл устройств", "AMQP / отдельные очереди")
+Rel(integration, bus, "Результаты команд, состояние, TelemetryReceived и ответы claim.v1", "AMQP / outbox")
+Rel(integration, devices, "Перед отправкой: ACTIVE-привязка, дом, bindingVersion, capabilities", "HTTPS / JSON / mTLS")
+Rel(integration, mqtt, "Подписки, команды, bootstrap; настройка сертификатов и ACL", "MQTT/TLS + HTTPS admin")
+Rel(edge, mqtt, "Устанавливает исходящий канал; отправляет измерения и ACK исполнения", "MQTT 5 / mTLS / QoS 1")
+Rel(mqtt, edge, "Команды по установленному каналу", "MQTT 5 / QoS 1 / retain=false / expiry")
+Rel(mqtt, integration, "Измерения, состояние, ACK, bootstrap-ответы", "MQTT / QoS 1")
+Rel(bus, telemetry, "TelemetryReceived.v1", "AMQP / отдельная очередь")
+Rel(telemetry, bus, "TelemetryRecorded.v1 после сохранения измерения", "AMQP / outbox")
+Rel(bus, automation, "TelemetryRecorded.v1, результаты команд", "AMQP / отдельные очереди")
+Rel(automation, heating, "Действие сценария; Idempotency-Key", "HTTPS / mTLS / владелец дома")
+Rel(automation, lighting, "Действие сценария; Idempotency-Key", "HTTPS / mTLS / владелец дома")
+Rel(automation, gates, "Действие сценария; Idempotency-Key", "HTTPS / mTLS / владелец дома")
+Rel(automation, video, "Запуск/остановка наблюдения; Idempotency-Key", "HTTPS / mTLS / владелец дома")
+note bottom of platform
+  Фильтр L2: API Gateway, контур доступа, БД и медиапотоки опущены.
+  RabbitMQ: доставка at-least-once; outbox + publisher confirms,
+  inbox/deduplication + consumer ACK после локального commit.
+  Каждому потребителю — своя очередь; события не конкурируют между сервисами.
+  Envelope: eventId, schemaVersion, houseId, deviceId, bindingVersion,
+  correlationId, causationId, occurredAt; команда: commandId, expiresAt, origin.
+  houseId определяется сервером по идентичности и привязке, а не из данных датчика.
+  Ограниченные повторы с backoff, затем DLQ; просроченные команды не переигрываются.
+  MQTT PUBACK подтверждает транспорт, а не физическое исполнение команды.
+  Требование к комплекту: ACK исполнения и dedup по commandId;
+  физические блокировки ворот и безопасное управление остаются локальными.
+end note
+
+@enduml

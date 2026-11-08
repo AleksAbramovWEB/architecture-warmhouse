@@ -1,0 +1,51 @@
+@startuml c4-l3-components-integration
+!pragma layout smetana
+!include <C4/C4_Component>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L3 / Components: Интеграция с устройствами
+
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+ContainerQueue(mqtt, "Брокер устройств", "MQTT 5 / TLS", "mTLS, ACL, bootstrap; соединения устройств.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / TLS", "Очередь каждого потребителя, retry и DLQ.")
+ContainerDb(db, "integration_db", "PostgreSQL", "привязки соединений, dispatch, inbox/outbox")
+Container_Boundary(service, "Интеграция с устройствами / Java 21 / Spring Framework / JVM-процесс") {
+Component(consumer, "Command / Lifecycle Consumer", "Spring AMQP / Java 21", "Дедупликация AMQP; команды в dispatch, события регистрации в provisioning.")
+Component(gate, "DispatchPolicy", "Java 21", "Перед отправкой проверяет expiresAt, ACTIVE, houseId, bindingVersion и capability.")
+Component(provision, "DeviceProvisioner", "Spring Framework / Java 21", "Bootstrap challenge; заводская идентичность; ACL и отзыв; старые bindingVersion отвергаются.")
+Component(dispatcher, "MQTTDispatcher", "Spring Scheduling / Java 21", "Доставка с прежним commandId; retain=false, QoS1 и срок действия; ограниченные повторы.")
+Component(ingress, "MQTTIngress", "Spring Integration / MQTT", "Принимает измерения и ACK; связывает идентичность канала с deviceId и домом.")
+Component(adapters, "ProtocolAdapterRegistry", "Java 21", "Защитный слой перевода: модель capabilities ↔ MQTT-профили партнёров; версии схем.")
+Component(normalizer, "EventNormalizer", "Spring Framework / Java 21", "Нормализует telemetry/state/ACK; назначает envelope; проверяет correlation и sequence.")
+Component(repo, "IntegrationRepository", "Spring JDBC / Spring TX", "dispatch, bootstrap/provisioning, привязки соединений, inbox/outbox.")
+Component(publisher, "OutboxPublisher", "Spring AMQP / Scheduling", "Результаты, нормализованные измерения и lifecycle ACK после commit.")
+}
+Rel(bus, consumer, "Команды / lifecycle.v1", "AMQP")
+Rel(consumer, gate, "Команда", "")
+Rel(consumer, provision, "Claim / Registered / Revoked", "")
+Rel(gate, devices, "Авторитетная ACTIVE-привязка и bindingVersion", "HTTPS / mTLS")
+Rel(gate, repo, "Сохранение dispatch + inbox", "")
+Rel(provision, repo, "Переходы provisioning и тайм-ауты", "")
+Rel(provision, mqtt, "Bootstrap topics; ACL, сертификаты, disconnect", "MQTT + HTTPS admin")
+Rel(repo, db, "Только integration_db", "SQL")
+Rel(dispatcher, repo, "Захват pending dispatch", "")
+Rel(dispatcher, gate, "Повторная проверка перед отправкой", "")
+Rel(dispatcher, adapters, "Кодирование команды", "")
+Rel(adapters, mqtt, "Публикация команды по deviceId", "MQTT / TLS")
+Rel(mqtt, ingress, "Измерения, state, ACK, bootstrap", "MQTT / TLS")
+Rel(ingress, provision, "Проверка challenge-ответа", "")
+Rel(ingress, adapters, "Декодирование известной схемы", "")
+Rel(adapters, normalizer, "Данные внутренней модели", "")
+Rel(normalizer, repo, "Результат / измерение + outbox", "")
+Rel(publisher, repo, "Чтение outbox", "")
+Rel(publisher, bus, "CommandResult / State / TelemetryReceived / ClaimVerified.v1", "AMQP / confirms")
+note bottom of service
+Адаптеры — компоненты одного сервиса, не отдельный сервис на производителя.
+Локальные протоколы (например, RTSP камеры) обслуживает домашний шлюз комплекта.
+Сервер выводит houseId из подтверждённой привязки, не доверяет полю из MQTT payload.
+Bootstrap credentials дают только bootstrap topic; рабочие права включаются после DeviceRegistered.
+Отзыв закрывает ACL/канал; перед каждой отправкой проверяется новая версия привязки.
+Неподдержанный протокол требует нового адаптера и проверки совместимости комплекта.
+end note
+
+@enduml

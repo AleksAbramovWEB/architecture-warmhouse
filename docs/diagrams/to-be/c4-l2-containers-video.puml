@@ -1,0 +1,48 @@
+@startuml c4-l2-containers-video
+!pragma layout smetana
+!include <C4/C4_Container>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L2 / Containers: отдельный тракт видеонаблюдения
+
+Person(user, "Владелец дома", "Запрашивает удалённый просмотр камеры.")
+System_Ext(edge, "Камера и домашний шлюз", "Локально получает RTSP-поток камеры и открывает исходящую медиасессию. Камера не выставляется в интернет.")
+System_Boundary(platform, "SaaS «Тёплый дом»") {
+Container(web, "Веб-приложение", "SPA", "Запрашивает сессию и воспроизводит поток.")
+Container(gateway, "API Gateway", "Reverse proxy", "JWT и маршрутизация API.")
+Container(video, "Видеонаблюдение", "Java 21 / Spring Framework / REST", "Авторизованные сессии просмотра; управление запуском потока; без видеоархива.")
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+Container(integration, "Интеграция с устройствами", "Java 21 / Spring Framework / AMQP / MQTT", "Адаптеры, нормализация, привязка соединений и доставка команд.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / TLS", "Команды подготовки потока и ACK исполнения.")
+ContainerQueue(mqtt, "Брокер устройств", "MQTT 5 / TLS", "Доставка управляющих сообщений шлюзу.")
+Container(media, "Медиашлюз", "Готовый WebRTC relay / STUN-TURN", "Сигналинг и ретрансляция видео через NAT; проверка краткоживущих сессий. Отдельное масштабирование по трафику.")
+}
+Rel(user, web, "Запрашивает просмотр", "HTTPS")
+Rel(web, gateway, "Создаёт сессию, затем получает её статус", "HTTPS / JSON")
+Rel(gateway, video, "Запрос камеры и сессии", "HTTPS / mTLS")
+Rel(video, homes, "Проверяет право владельца на дом", "HTTPS / mTLS")
+Rel(video, devices, "Проверяет ACTIVE-привязку камеры и возможности", "HTTPS / mTLS")
+Rel(video, media, "Создаёт / завершает сессию", "HTTPS admin / mTLS")
+Rel(media, video, "Проверяет сессию, роль publisher/viewer, TTL и доступ", "HTTPS introspection / mTLS")
+Rel(video, bus, "CommandRequested: подготовка потока и временный publisher grant", "AMQP / outbox")
+Rel(bus, integration, "Команда подготовки; без передачи видеоданных", "AMQP")
+Rel(integration, mqtt, "Доставляет параметры сессии", "MQTT / TLS / retain=false")
+Rel(mqtt, edge, "Управляющее сообщение по исходящему каналу", "MQTT / TLS")
+Rel(edge, mqtt, "ACK подготовки потока", "MQTT / TLS")
+Rel(mqtt, integration, "ACK исполнения", "MQTT / TLS")
+Rel(integration, bus, "CommandResult.v1", "AMQP / outbox")
+Rel(bus, video, "Обновление статуса сессии", "AMQP")
+Rel(edge, media, "Исходящий медиаканал и сигналинг; publisher grant", "WebRTC / DTLS-SRTP + HTTPS")
+Rel(web, media, "Сигналинг; отдельный viewer grant", "HTTPS / WebRTC")
+Rel(media, web, "Ретранслирует видео; при необходимости TURN", "WebRTC / DTLS-SRTP")
+note bottom of platform
+  Сессия связывает principal, houseId, cameraId и expiresAt; grants разных ролей.
+  202 означает подготовку. Просмотр разрешён только после готовности сессии;
+  разрешение выдаётся после проверки владельца, повторно проверяется при старте
+  и продлении; завершение/истечение закрывает медиасессию.
+  Видеоданные идут через медиашлюз, отдельно от REST, AMQP и телеметрии.
+  Готовый медиашлюз и IdP используются как инфраструктура, не разрабатываются командой.
+end note
+
+@enduml

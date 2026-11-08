@@ -1,0 +1,135 @@
+@startuml c4-l4-code-command-model
+!pragma layout smetana
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+
+title Тёплый дом — To-Be — C4 L4 / Code: CommandHandler (Java 21 / Spring Framework)
+
+interface AccessPolicy {
+  +void requireOwner(String subject, UUID houseId)
+}
+interface DeviceDirectory {
+  +DeviceBinding requireActive(UUID houseId, UUID deviceId, String action)
+}
+interface DomainPolicy {
+  +void validate(Command command, StateSnapshot knownState)
+}
+interface TransactionalCommandStore {
+  +Command submitOrGet(Command command, OutboxMessage event)
+  +Optional<Command> findById(UUID commandId)
+  +void applyResultOnce(UUID eventId, CommandResult result)
+}
+class PostgresCommandStore <<@Repository>> {
+  -JdbcTemplate jdbc
+  +Command submitOrGet(Command command, OutboxMessage event)
+  +Optional<Command> findById(UUID commandId)
+  +void applyResultOnce(UUID eventId, CommandResult result)
+}
+class CommandHTTPHandler <<@RestController>> {
+  +ResponseEntity<CommandView> postCommand(CommandRequest request, Authentication principal, String key)
+  +ResponseEntity<CommandView> getCommand(UUID commandId, Authentication principal)
+}
+class CommandHandler <<@Service>> {
+  +Command submit(String subject, CommandRequest request, String key)
+  +Command readAuthorized(String subject, UUID commandId)
+}
+class Command {
+  +UUID id
+  +UUID houseId
+  +UUID deviceId
+  +long bindingVersion
+  +String principalId
+  +String idempotencyKey
+  +String action
+  +Map<String, Object> payload
+  +String payloadHash
+  +Instant expiresAt
+  +CommandStatus status
+  +void applyDeviceResult(CommandResult result)
+}
+enum CommandStatus {
+  ACCEPTED
+  SUCCEEDED
+  FAILED
+  EXPIRED
+  UNKNOWN
+}
+class DeviceBinding <<record>> {
+  +UUID deviceId
+  +UUID houseId
+  +long bindingVersion
+  +Set<String> capabilities
+}
+class OutboxMessage <<record>> {
+  +UUID eventId
+  +int schemaVersion
+  +UUID commandId
+  +String origin
+  +Instant expiresAt
+  +Map<String, Object> payload
+}
+class OutboxPublisher <<@Component>> {
+  +void publishPendingWithConfirms()
+}
+class ResultConsumer <<@Component>> {
+  +void onMessage(ResultEnvelope event, Channel channel, long deliveryTag)
+}
+class StateSnapshot <<record>> {
+  +UUID deviceId
+  +long bindingVersion
+  +long sequence
+  +Instant observedAt
+  +Map<String, Object> state
+}
+CommandHTTPHandler --> CommandHandler : вызов после проверки JWT в Spring Security
+CommandHandler --> AccessPolicy : доступ к дому
+CommandHandler --> DeviceDirectory : ACTIVE / capability
+CommandHandler --> DomainPolicy : бизнес-правила контекста
+DeviceDirectory ..> DeviceBinding : возвращает
+CommandHandler --> TransactionalCommandStore : через Spring bean
+PostgresCommandStore ..|> TransactionalCommandStore
+PostgresCommandStore ..> Command : сохраняет
+PostgresCommandStore ..> OutboxMessage : сохраняет атомарно
+Command --> CommandStatus
+OutboxPublisher ..> OutboxMessage : Spring AMQP publish / confirm / mark sent
+ResultConsumer --> TransactionalCommandStore : applyResultOnce через Spring bean
+PostgresCommandStore --> Command : корреляция результата
+PostgresCommandStore --> StateSnapshot : сохраняет только более новый sequence
+
+' Keep admission, persistence and asynchronous workers in successive rows.
+CommandHandler -[hidden]down-> PostgresCommandStore
+PostgresCommandStore -[hidden]down-> ResultConsumer
+ResultConsumer -[hidden]down-> OutboxPublisher
+
+note bottom of PostgresCommandStore
+  Методы submitOrGet и applyResultOnce — public @Transactional.
+  Первый атомарно записывает команду и outbox;
+  второй — inbox, статус команды и подтверждённое состояние.
+  UNIQUE(houseId, principalId, idempotencyKey).
+  Тот же payloadHash → прежняя команда; другой → 409.
+end note
+note bottom of ResultConsumer
+  @RabbitListener(ackMode = "MANUAL").
+  basicAck вызывается только после возврата из транзакционного bean:
+  к этому моменту commit завершён; исключение приводит к retry/DLQ.
+end note
+note bottom of OutboxPublisher
+  @Scheduled запускает выборку pending outbox.
+  RabbitTemplate использует publisher confirms.
+  Публикация отделена от транзакции приёма команды;
+  повторы сохраняют eventId и commandId.
+end note
+note bottom of Command
+  SUCCEEDED — только ACK физического исполнения.
+  FAILED — явный отказ, EXPIRED — подтверждённо не отправлена до deadline.
+  Нет финального ACK к deadline → UNKNOWN, без новой команды.
+  Поздний ACK может уточнить UNKNOWN; старый bindingVersion отвергается.
+end note
+note top of DomainPolicy
+  Отопление, освещение и ворота используют один шаблон механизма,
+  но отдельные реализации policy, модели и БД.
+  DTO и вся реализация сервисов здесь не раскрываются.
+  Это проектная UML-модель для Java 21 и Spring Framework.
+end note
+
+@enduml

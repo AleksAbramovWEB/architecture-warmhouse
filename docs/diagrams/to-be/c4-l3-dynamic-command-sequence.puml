@@ -1,0 +1,75 @@
+@startuml c4-l3-dynamic-command-sequence
+!pragma layout smetana
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 180
+hide footbox
+title Тёплый дом — To-Be — C4 L3 / Dynamic: доставка команды и подтверждение исполнения
+
+
+actor "Пользователь" as user
+participant "CommandHandler\nодного из функциональных сервисов" as api
+database "БД этого сервиса\ncommands + outbox + inbox" as db
+participant "OutboxPublisher" as publisher
+queue "RabbitMQ" as bus
+participant "Интеграция с устройствами" as bridge
+queue "MQTT Broker" as mqtt
+participant "Устройство / домашний шлюз" as edge
+
+user -> api : POST command + JWT + Idempotency-Key
+note over api
+  Проверяет право на дом через «Пользователи и дома»;
+  ACTIVE, capability и bindingVersion — через «Устройства и модули».
+  Отказ проверки → 403/404; недоступная проверка → 503; команда не создаётся.
+end note
+api -> db : TX: submitOrGet(key, payloadHash), command + outbox
+alt Ключ уже есть с тем же payloadHash
+  db --> api : Прежний commandId; новая запись outbox не создаётся
+  api --> user : 202, тот же commandId
+else Ключ уже есть с другим payloadHash
+  db --> api : Конфликт ключа
+  api --> user : 409
+else Новая команда
+  db --> api : COMMIT: ACCEPTED, commandId, expiresAt
+  api --> user : 202 + commandId (ещё не исполнена)
+end
+
+publisher -> db : Выбирает pending outbox
+publisher -> bus : CommandRequested.v1 (persistent)
+bus --> publisher : publisher confirm
+publisher -> db : Помечает outbox опубликованной
+note over publisher,bus
+  Сбой после confirm до записи в БД создаёт повтор доставки.
+  Все повторы несут прежний commandId/eventId.
+end note
+bus -> bridge : CommandRequested.v1
+bridge -> bridge : TX: inbox + долговечная dispatch-запись
+bridge --> bus : consumer ACK после COMMIT
+bridge -> bridge : Перед каждой отправкой: ACTIVE и bindingVersion\nиз API устройств; expiresAt и допустимая capability
+alt Команда просрочена до отправки или привязка отозвана
+  bridge -> bridge : TX: результат EXPIRED / FAILED + outbox
+else Команда допущена
+  bridge -> mqtt : QoS1, commandId, expiresAt, retain=false
+  mqtt --> bridge : PUBACK (только транспорт)
+  mqtt -> edge : Команда по исходящему соединению устройства
+  edge -> edge : Проверяет deadline и bindingVersion;\ndedup commandId; запрашивает целевое состояние
+  edge -> mqtt : ACK физического исполнения + commandId + sequence
+  mqtt -> bridge : ACK исполнения
+  bridge -> bridge : TX: результат + outbox
+end
+bridge -> bus : CommandResult.v1 через outbox + confirms
+bus -> api : Очередь результатов исходного сервиса
+api -> db : TX: inbox + command status + confirmed state\n(только более новый sequence)
+api --> bus : consumer ACK после COMMIT
+user -> api : GET commandId
+api --> user : SUCCEEDED / FAILED / EXPIRED / UNKNOWN
+note over api,edge
+  Нет финального подтверждения к deadline → UNKNOWN.
+  Новый commandId автоматически не создаётся; просроченное не переигрывается.
+  Поздний ACK уточняет статус; брокерный ACK сам не означает успеха.
+  Комплект обязан поддерживать dedup и ACK исполнения;
+  локальная защита ворот работает независимо от облака.
+end note
+
+@enduml

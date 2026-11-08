@@ -1,0 +1,30 @@
+@startuml c4-l3-components-homes
+!pragma layout smetana
+!include <C4/C4_Component>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L3 / Components: Пользователи и дома
+
+Container(gateway, "API Gateway", "Reverse proxy", "Маршрутизация пользовательских запросов с JWT.")
+ContainerDb(db, "homes_db", "PostgreSQL", "дома, owner_sub")
+Container_Boundary(service, "Пользователи и дома / Java 21 / Spring Framework / JVM-процесс") {
+Component(api, "Home API", "Java 21 / Spring MVC + Security", "CRUD домов и внутренний endpoint проверки прав; JWT/mTLS.")
+Component(policy, "OwnerPolicy", "Java 21", "Только owner_sub имеет доступ к дому; чужой дом не раскрывается.")
+Component(app, "HomeService", "Spring Framework / Java 21", "Создание дома и операции владельца; sub берётся из проверенного principal.")
+Component(repo, "HomeRepository", "Spring JDBC / Spring TX", "Транзакции домов; уникальные идентификаторы.")
+}
+Rel(gateway, api, "Дома и права", "HTTP / JSON")
+Rel(api, app, "Команды и запросы", "")
+Rel(api, policy, "Проверка доступа", "")
+Rel(app, policy, "Проверяет владельца", "")
+Rel(policy, repo, "Читает owner_sub", "")
+Rel(app, repo, "Чтение / запись", "")
+Rel(repo, db, "Только homes_db", "SQL")
+note bottom of service
+Готовый внешний IdP владеет паролями и выдаёт JWT. Этот сервис хранит только sub и дома.
+MVP: один владелец дома; общий доступ и передача владения не входят в MVP.
+Проверка доступа вызывается остальными сервисами по HTTP/mTLS.
+Отказ или тайм-аут проверки доступа — операция не разрешается.
+end note
+
+@enduml

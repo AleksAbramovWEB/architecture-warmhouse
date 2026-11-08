@@ -1,0 +1,50 @@
+@startuml c4-l2-containers-data
+!pragma layout smetana
+!include <C4/C4_Container>
+LAYOUT_LEFT_RIGHT()
+
+title Тёплый дом — To-Be — C4 L2 / Containers: владение данными
+
+System_Boundary(platform, "SaaS «Тёплый дом»") {
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+Container(heating, "Отопление", "Java 21 / Spring Framework / REST", "Включение/выключение отопления; команды и подтверждённое состояние.")
+Container(lighting, "Освещение", "Java 21 / Spring Framework / REST", "Включение/выключение света; команды и подтверждённое состояние.")
+Container(gates, "Ворота", "Java 21 / Spring Framework / REST", "Открытие/закрытие, запирание/отпирание; контроль допустимых переходов.")
+Container(video, "Видеонаблюдение", "Java 21 / Spring Framework / REST", "Авторизованные сессии просмотра; управление запуском потока; без видеоархива.")
+Container(telemetry, "Телеметрия", "Java 21 / Spring Framework / REST", "Текущие и исторические измерения, время и качество данных.")
+Container(automation, "Сценарии", "Java 21 / Spring Framework / REST", "Редактор правил, триггеры, исполнение действий от имени владельца дома.")
+Container(integration, "Интеграция с устройствами", "Java 21 / Spring Framework / AMQP / MQTT", "Адаптеры, нормализация, привязка соединений и доставка команд.")
+Boundary(cluster, "Один кластер PostgreSQL для MVP; отдельная БД и роль каждого сервиса", "Infrastructure") {
+ContainerDb(homes_db, "homes_db", "PostgreSQL", "дома, owner_sub")
+ContainerDb(devices_db, "devices_db", "PostgreSQL", "каталог, модули, устройства, claim, outbox/inbox")
+ContainerDb(heating_db, "heating_db", "PostgreSQL", "команды, состояния, outbox/inbox")
+ContainerDb(lighting_db, "lighting_db", "PostgreSQL", "команды, состояния, outbox/inbox")
+ContainerDb(gates_db, "gates_db", "PostgreSQL", "команды, состояния, outbox/inbox")
+ContainerDb(video_db, "video_db", "PostgreSQL", "камеры, сессии, команды потока, outbox/inbox")
+ContainerDb(telemetry_db, "telemetry_db", "PostgreSQL", "измерения (партиции), inbox/outbox")
+ContainerDb(automation_db, "automation_db", "PostgreSQL", "правила, расписания, запуски, задачи, inbox")
+ContainerDb(integration_db, "integration_db", "PostgreSQL", "привязки соединений, dispatch, inbox/outbox")
+}
+}
+Rel(homes, homes_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(devices, devices_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(heating, heating_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(lighting, lighting_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(gates, gates_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(video, video_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(telemetry, telemetry_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(automation, automation_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+Rel(integration, integration_db, "Единственный владелец; локальные транзакции и миграции", "SQL / TLS")
+note bottom of platform
+  Фильтр L2: показаны только сервисы и их хранилища.
+  Межсервисных SQL, внешних ключей и JOIN между БД нет.
+  Ссылки на дом/устройство проверяются API владельца или проекцией событий.
+  Запись бизнес-изменения и outbox выполняется в одной локальной транзакции.
+  «Телеметрия» хранит партиции по времени; срок хранения задаётся политикой.
+  «Видеонаблюдение» хранит метаданные сессий; видеопоток в PostgreSQL не попадает.
+  Один кластер упрощает MVP, но остаётся общей точкой отказа и конкуренции за ресурсы;
+  репликация/резервные копии и независимые лимиты обязательны для промышленной поставки.
+end note
+
+@enduml

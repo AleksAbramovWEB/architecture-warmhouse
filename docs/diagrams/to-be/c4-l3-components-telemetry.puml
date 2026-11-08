@@ -1,0 +1,37 @@
+@startuml c4-l3-components-telemetry
+!pragma layout smetana
+!include <C4/C4_Component>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L3 / Components: Телеметрия
+
+Container(gateway, "API Gateway", "Reverse proxy", "Маршрутизация пользовательских запросов с JWT.")
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / TLS", "Очередь каждого потребителя, retry и DLQ.")
+ContainerDb(db, "telemetry_db", "PostgreSQL", "измерения (партиции), inbox/outbox")
+Container_Boundary(service, "Телеметрия / Java 21 / Spring Framework / JVM-процесс") {
+Component(api, "Telemetry Query API", "Java 21 / Spring MVC + Security", "Текущие показания, время, quality/stale и история; JWT.")
+Component(ingest, "TelemetryConsumer", "Spring AMQP / Java 21", "inbox/dedup по eventId; принимает только нормализованные сообщения интеграции.")
+Component(validator, "MeasurementPolicy", "Java 21", "Версия схемы, единицы, observedAt/receivedAt, sequence и bindingVersion; stale явно.")
+Component(repo, "TelemetryRepository", "Spring JDBC / Spring TX", "История и последнее значение; устаревшее событие не откатывает последнее; inbox/outbox.")
+Component(retention, "RetentionWorker", "Spring Scheduling / Java 21", "Очистка партиций истории по политике хранения.")
+Component(publisher, "OutboxPublisher", "Spring AMQP / Scheduling", "TelemetryRecorded.v1 после сохранения; автоматизация видит только принятые измерения.")
+}
+Rel(gateway, api, "Чтение текущих и исторических значений", "HTTP")
+Rel(api, homes, "Проверка доступа к дому", "HTTPS / mTLS")
+Rel(api, repo, "Чтение с обязательным houseId", "")
+Rel(bus, ingest, "TelemetryReceived.v1", "AMQP")
+Rel(ingest, validator, "Проверка показания", "")
+Rel(validator, repo, "inbox + измерение + outbox, один commit", "")
+Rel(repo, db, "Только telemetry_db", "SQL")
+Rel(retention, db, "Удаление старых партиций", "SQL")
+Rel(publisher, repo, "Читает outbox", "")
+Rel(publisher, bus, "TelemetryRecorded.v1", "AMQP / confirms")
+note bottom of service
+Измерение: deviceId, houseId, bindingVersion, metric, value, unit, observedAt, receivedAt, sequence.
+Чтение не опрашивает приборы. При недоступном приборе сохраняется последнее значение с age/quality.
+Валидация ошибок не запускает бесконечный retry: неподдержанная схема — DLQ.
+История — партиции по времени и индекс (houseId, deviceId, observedAt).
+end note
+
+@enduml

@@ -1,0 +1,43 @@
+@startuml c4-l3-components-devices
+!pragma layout smetana
+!include <C4/C4_Component>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L3 / Components: Устройства и модули
+
+Container(gateway, "API Gateway", "Reverse proxy", "Маршрутизация пользовательских запросов с JWT.")
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / TLS", "Очередь каждого потребителя, retry и DLQ.")
+ContainerDb(db, "devices_db", "PostgreSQL", "каталог, модули, устройства, claim, outbox/inbox")
+Container_Boundary(service, "Устройства и модули / Java 21 / Spring Framework / JVM-процесс") {
+Component(api, "Device API", "Java 21 / Spring MVC + Security", "Каталог, создание claim, чтение статуса, отзыв устройства; JWT.")
+Component(claim, "ClaimService", "Spring Framework / Java 21", "Проверка одноразового кода, резервирование серийного номера; PENDING.")
+Component(catalog, "CapabilityCatalog", "Spring Framework / Java 21", "Версии типов/комплектов, схемы измерений и поддерживаемых команд.")
+Component(lifecycle, "LifecycleConsumer", "Spring AMQP / Java 21", "Подтверждение идентичности: PENDING → ACTIVE; отзыв и bindingVersion.")
+Component(expiry, "ClaimTimeoutWorker", "Spring Scheduling / Java 21", "Тайм-аут и отмена незавершённых подключений; событие отзыва.")
+Component(repo, "DeviceRepository", "Spring JDBC / Spring TX", "Привязка, уникальный serial, hash кода, inbox/outbox; локальная транзакция.")
+Component(publisher, "OutboxPublisher", "Spring AMQP / Scheduling", "Повторяемая доставка lifecycle-событий; publisher confirms.")
+}
+Rel(gateway, api, "Каталог / claims / устройства", "HTTP")
+Rel(api, homes, "Проверка владельца дома", "HTTPS / mTLS")
+Rel(api, claim, "Подключение или отзыв", "")
+Rel(api, catalog, "Каталог и возможности", "")
+Rel(api, repo, "Чтение ACTIVE-профиля и bindingVersion", "")
+Rel(claim, catalog, "Проверка совместимости комплекта", "")
+Rel(claim, repo, "Резервирование + outbox атомарно", "")
+Rel(bus, lifecycle, "ClaimVerified / ClaimFailed", "AMQP")
+Rel(lifecycle, repo, "inbox + переход + outbox в одной транзакции", "")
+Rel(expiry, repo, "PENDING → EXPIRED + outbox", "")
+Rel(catalog, repo, "Каталог", "")
+Rel(repo, db, "Только devices_db", "SQL")
+Rel(publisher, repo, "Читает outbox", "")
+Rel(publisher, bus, "ClaimRequested / Registered / Revoked.v1", "AMQP")
+note bottom of service
+Код подключения хранится как hash; событие claim не содержит исходный код.
+Подтверждение от интеграции привязано к claimId, deviceId, nonce и bindingVersion.
+Unique(serial) и блокировка записи исключают одновременную привязку к двум домам.
+ACTIVE разрешён только после проверки оборудования; повторный eventId идемпотентен.
+Новые типы в рамках известных capabilities — через каталог; новый протокол — через адаптер.
+end note
+
+@enduml

@@ -1,0 +1,46 @@
+@startuml c4-l3-components-heating
+!pragma layout smetana
+!include <C4/C4_Component>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L3 / Components: Отопление
+
+Container(gateway, "API Gateway", "Reverse proxy", "Маршрутизация пользовательских запросов с JWT.")
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+Container(automation, "Сценарии", "Java 21 / Spring Framework / REST", "Редактор правил, триггеры, исполнение действий от имени владельца дома.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / TLS", "Очередь каждого потребителя, retry и DLQ.")
+ContainerDb(db, "heating_db", "PostgreSQL", "команды, состояния, outbox/inbox")
+Container_Boundary(service, "Отопление / Java 21 / Spring Framework / JVM-процесс") {
+Component(api, "Command API", "Java 21 / Spring MVC + Security", "Принятие команды (202), её статус и подтверждённое состояние; JWT.")
+Component(handler, "CommandHandler", "Spring Framework / Java 21", "Проверки доступа, привязки и capability; Idempotency-Key + hash payload.")
+Component(policy, "HeatingPolicy", "Java 21", "Включение/выключение; только отопительный модуль. Без предположения о наличии термостата.")
+Component(results, "StateManager / ResultConsumer", "Spring AMQP / Java 21", "Корреляция commandId, inbox, обновление статуса по ACK прибора; защита от старых sequence.")
+Component(expiry, "CommandDeadlineWorker", "Spring Scheduling / Java 21", "Нет финального ACK к deadline → UNKNOWN; EXPIRED — только подтверждённая отмена до отправки.")
+Component(repo, "CommandRepository", "Spring JDBC / Spring TX", "Команды, подтверждённое состояние, idempotency, inbox/outbox; атомарный commit.")
+Component(publisher, "OutboxPublisher", "Spring AMQP / Scheduling", "Публикация команд с commandId, bindingVersion и expiresAt.")
+}
+Rel(gateway, api, "Команды и состояние", "HTTP")
+Rel(automation, api, "Действия от имени владельца; стабильный ключ", "HTTPS / mTLS")
+Rel(api, handler, "Submit / GetStatus", "")
+Rel(handler, homes, "Проверка владельца дома", "HTTPS / mTLS")
+Rel(handler, devices, "ACTIVE, дом, возможности и версия привязки", "HTTPS / mTLS")
+Rel(handler, policy, "Проверка допустимости команды", "")
+Rel(handler, repo, "Команда + outbox атомарно; авторизованное чтение", "")
+Rel(bus, results, "CommandResult / DeviceStateReported.v1", "AMQP / своя очередь")
+Rel(results, repo, "inbox + состояние + ACK после commit", "")
+Rel(expiry, repo, "Проверка deadline и обновление статуса", "")
+Rel(repo, db, "Только heating_db", "SQL")
+Rel(publisher, repo, "Читает outbox", "")
+Rel(publisher, bus, "CommandRequested.v1", "AMQP / confirms")
+note bottom of service
+202 — команда принята, физическое выполнение ещё не подтверждено.
+Новый ключ создаёт команду; прежний ключ + тот же payload возвращает прежний commandId;
+тот же ключ + другой payload → 409. Область ключа: дом и вызывающий principal.
+Нет автоматического нового commandId при тайм-ауте. Просроченное не исполняется.
+Поздний ACK уточняет UNKNOWN; старое измерение состояния не затирает более новое.
+Входящий HTTP: JWT и service identity; данные других контекстов — только через API.
+Никаких прямых запросов к чужим БД.
+end note
+
+@enduml
