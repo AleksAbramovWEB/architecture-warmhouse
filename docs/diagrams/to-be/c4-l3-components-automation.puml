@@ -1,0 +1,51 @@
+@startuml c4-l3-components-automation
+!pragma layout smetana
+!include <C4/C4_Component>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L3 / Components: Сценарии
+
+Container(gateway, "API Gateway", "Reverse proxy", "Маршрутизация пользовательских запросов с JWT.")
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+Container(heating, "Отопление", "Java 21 / Spring Framework / REST", "Включение/выключение отопления; команды и подтверждённое состояние.")
+Container(lighting, "Освещение", "Java 21 / Spring Framework / REST", "Включение/выключение света; команды и подтверждённое состояние.")
+Container(gates, "Ворота", "Java 21 / Spring Framework / REST", "Открытие/закрытие, запирание/отпирание; контроль допустимых переходов.")
+Container(video, "Видеонаблюдение", "Java 21 / Spring Framework / REST", "Авторизованные сессии просмотра; управление запуском потока; без видеоархива.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / TLS", "Очередь каждого потребителя, retry и DLQ.")
+ContainerDb(db, "automation_db", "PostgreSQL", "правила, расписания, запуски, задачи, inbox")
+Container_Boundary(service, "Сценарии / Java 21 / Spring Framework / JVM-процесс") {
+Component(api, "Scenario API", "Java 21 / Spring MVC + Security", "Создание, проверка, включение/отключение правил и чтение запусков; JWT.")
+Component(rules, "RuleValidator", "Java 21", "Ограниченный DSL: условие, расписание, действия; только известные capabilities.")
+Component(inbox, "TriggerConsumer", "Spring AMQP / Java 21", "TelemetryRecorded и результаты команд; inbox по eventId.")
+Component(scheduler, "ScheduleWorker", "Spring Scheduling / Java 21", "Создаёт триггеры расписания; блокировка от двойного запуска репликами.")
+Component(engine, "ScenarioEngine", "Spring Framework / Java 21", "Проверяет свежесть показаний, условия, cooldown, causation и лимит действий.")
+Component(tasks, "ActionDispatcher", "Spring Scheduling / Java 21", "Долговечные задачи: стабильный ключ runId/actionId; backoff и deadline; учёт commandId.")
+Component(repo, "ScenarioRepository", "Spring JDBC / Spring TX", "Правила, запуски и задачи; unique(scenarioVersion, triggerId, actionIndex).")
+}
+Rel(gateway, api, "Сценарии и запуски", "HTTP")
+Rel(api, homes, "Проверка владельца дома", "HTTPS / mTLS")
+Rel(api, rules, "Валидация правил", "")
+Rel(rules, devices, "ACTIVE-привязки и capabilities", "HTTPS / mTLS")
+Rel(rules, repo, "Сохраняет правило и его версию", "")
+Rel(bus, inbox, "Измерения / результаты команд", "AMQP")
+Rel(inbox, engine, "Триггер", "")
+Rel(inbox, repo, "Дедупликация и результат действия", "")
+Rel(scheduler, engine, "Триггер расписания", "")
+Rel(scheduler, repo, "Захват due-расписания и сохранение triggerId", "")
+Rel(engine, repo, "Запуск и задачи атомарно", "")
+Rel(tasks, repo, "Захват задачи; сохранение commandId", "")
+Rel(tasks, heating, "Действие и статус", "HTTPS / mTLS")
+Rel(tasks, lighting, "Действие и статус", "HTTPS / mTLS")
+Rel(tasks, gates, "Действие и статус", "HTTPS / mTLS")
+Rel(tasks, video, "Управление наблюдением и статус", "HTTPS / mTLS")
+Rel(repo, db, "Только automation_db", "SQL")
+note bottom of service
+У задачи сохранён владелец дома. Сервис исполнения аутентифицируется по mTLS;
+целевой контекст проверяет право этого владельца заново через «Пользователи и дома».
+Произвольный пользовательский заголовок с ownerId не является делегированием.
+Retry использует прежний Idempotency-Key; цепочки ограничены causation/cooldown/deadline.
+Произвольный пользовательский код не исполняется. Состояние задач переживает перезапуск.
+end note
+
+@enduml

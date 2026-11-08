@@ -1,31 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Exit on any error
-set -e
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-echo "Starting the Smart Home Sensor API..."
-echo "Building and starting containers..."
-docker-compose up --build -d
+docker compose up --build --detach --wait --wait-timeout 120
+docker compose ps
 
-echo "Waiting for services to be ready..."
-# Wait for PostgreSQL to be ready
-for i in {1..30}; do
-  if docker exec smarthome-postgres pg_isready -U postgres > /dev/null 2>&1; then
-    echo "PostgreSQL is ready!"
-    break
-  fi
-  echo "Waiting for PostgreSQL to start... ($i/30)"
-  sleep 1
-done
-
-# Check if PostgreSQL is ready
-if ! docker exec smarthome-postgres pg_isready -U postgres > /dev/null 2>&1; then
-  echo "Error: PostgreSQL did not start within the expected time."
-  exit 1
-fi
-
-echo "All services are up and running!"
-echo "The API is available at http://localhost:8080"
-echo ""
-echo "To view logs, run: docker-compose logs -f"
-echo "To stop the services, run: docker-compose down"
+app_address="$(docker compose port app 8080)"
+temperature_address="$(docker compose port temperature-api 8081)"
+echo "Smart Home API: http://${app_address}"
+echo "Temperature API: http://${temperature_address}"
+printf 'Logs: docker compose -f %q logs -f\n' "$PWD/docker-compose.yml"
+printf 'Stop: docker compose -f %q down (database volume is preserved)\n' "$PWD/docker-compose.yml"

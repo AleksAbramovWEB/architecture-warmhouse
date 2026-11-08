@@ -1,0 +1,43 @@
+@startuml c4-l2-containers-api
+!pragma layout smetana
+!include <C4/C4_Container>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L2 / Containers: пользовательские запросы
+
+Person(user, "Владелец дома", "Сам выбирает комплекты, подключает устройства и настраивает правила.")
+System_Ext(idp, "Провайдер идентификации", "Готовый OIDC IdP: вход, пароли, выпуск JWT.")
+System_Boundary(platform, "SaaS «Тёплый дом»") {
+Container(web, "Веб-приложение", "SPA / HTTPS", "Управление домом и просмотр телеметрии; OIDC Authorization Code + PKCE.")
+Container(gateway, "API Gateway", "Готовый reverse proxy", "Маршрутизация /api/v1; проверка JWT, лимиты. Без бизнес-логики и собственной БД.")
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+Container(heating, "Отопление", "Java 21 / Spring Framework / REST", "Включение/выключение отопления; команды и подтверждённое состояние.")
+Container(lighting, "Освещение", "Java 21 / Spring Framework / REST", "Включение/выключение света; команды и подтверждённое состояние.")
+Container(gates, "Ворота", "Java 21 / Spring Framework / REST", "Открытие/закрытие, запирание/отпирание; контроль допустимых переходов.")
+Container(video, "Видеонаблюдение", "Java 21 / Spring Framework / REST", "Авторизованные сессии просмотра; управление запуском потока; без видеоархива.")
+Container(telemetry, "Телеметрия", "Java 21 / Spring Framework / REST", "Текущие и исторические измерения, время и качество данных.")
+Container(automation, "Сценарии", "Java 21 / Spring Framework / REST", "Редактор правил, триггеры, исполнение действий от имени владельца дома.")
+}
+Rel(user, web, "Использует", "HTTPS")
+Rel(web, idp, "Вход и обновление токенов", "OIDC / HTTPS")
+Rel(web, gateway, "Запросы с access token", "HTTPS / JSON")
+Rel(gateway, idp, "Получает ключи проверки JWT (кэш)", "HTTPS / JWKS")
+Rel(gateway, homes, "Дома и права", "HTTP / JSON")
+Rel(gateway, devices, "Каталог, подключение, устройства", "HTTP / JSON")
+Rel(gateway, heating, "Команды и их статус", "HTTP / JSON")
+Rel(gateway, lighting, "Команды и их статус", "HTTP / JSON")
+Rel(gateway, gates, "Команды и их статус", "HTTP / JSON")
+Rel(gateway, video, "Сессии просмотра", "HTTP / JSON")
+Rel(gateway, telemetry, "Текущие и исторические показания", "HTTP / JSON")
+Rel(gateway, automation, "Правила и результаты запусков", "HTTP / JSON")
+note bottom of platform
+  Фильтр L2: показан пользовательский контур; очереди, интеграция,
+  медиаданные и БД раскрыты в остальных представлениях L2.
+  Сервисы повторно проверяют JWT и доступ к дому через «Пользователи и дома».
+  Внутренний HTTP — mTLS; недоступность проверки прав означает отказ.
+  Профиль устройства и его ACTIVE-привязка проверяются через «Устройства и модули».
+  Контракты команд возвращают 202 + commandId; результат читается отдельно.
+end note
+
+@enduml

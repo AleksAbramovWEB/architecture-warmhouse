@@ -1,0 +1,69 @@
+@startuml c4-l3-dynamic-device-claim-sequence
+!pragma layout smetana
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 180
+hide footbox
+title Тёплый дом — To-Be — C4 L3 / Dynamic: самостоятельное подключение комплекта
+
+
+actor "Владелец дома" as user
+participant "Устройства и модули\nClaimService / LifecycleConsumer" as registry
+participant "Пользователи и дома" as homes
+database "devices_db" as db
+queue "RabbitMQ" as bus
+participant "Интеграция\nDeviceProvisioner" as bridge
+queue "MQTT Broker" as mqtt
+participant "Комплект / домашний шлюз" as edge
+
+note over registry,edge
+  Предпосылка совместимости: заводская идентичность/сертификат комплекта
+  зарегистрированы партнёром; hash одноразового кода доступен реестру.
+  Заводской доступ MQTT ограничен bootstrap topic; рабочих команд ещё нет.
+end note
+edge -> mqtt : Исходящее mTLS-соединение с заводской идентичностью
+user -> registry : POST claim (houseId, serial, одноразовый QR-код)
+registry -> homes : Проверка: principal владеет домом
+homes --> registry : Разрешено
+registry -> registry : Проверяет hash кода и совместимость типа
+registry -> db : TX: блокировка serial, PENDING claim + nonce,\nрезервирование устройства + outbox
+note over registry,db
+  Unique serial / одна активная привязка на физическое устройство.
+  Неверный код, чужой дом или занятое устройство → отказ до outbox.
+end note
+db --> registry : COMMIT
+registry --> user : 202 + claimId
+registry -> bus : Outbox: DeviceClaimRequested.v1\n(claimId, deviceId, houseId, bindingVersion, nonce; без QR-кода)
+bus -> bridge : DeviceClaimRequested.v1
+bridge -> bridge : TX inbox + provisioning; затем ACK брокеру
+bridge -> mqtt : Challenge ожидаемой заводской идентичности
+mqtt -> edge : Challenge(claimId, nonce)
+edge -> mqtt : Подтверждение владения ключом / подписанный nonce
+mqtt -> bridge : Bootstrap-ответ с аутентифицированной device identity
+alt Идентичность и challenge подтверждены
+  bridge -> mqtt : Настройка ACL устройства/дома; рабочие команды ещё закрыты
+  bridge -> bus : Outbox: DeviceClaimVerified.v1\n(claimId, deviceId, nonce, bindingVersion)
+  bus -> registry : DeviceClaimVerified.v1
+  registry -> db : TX: inbox; проверяет PENDING и nonce;\nACTIVE + код использован + outbox DeviceRegistered
+  registry -> bus : DeviceRegistered.v1 через outbox
+  bus -> bridge : DeviceRegistered.v1
+  bridge -> mqtt : Включает рабочие topics по привязке\nи подтверждённой bindingVersion
+  user -> registry : GET профиль устройства?bindingVersion=...
+  registry --> user : ACTIVE (канал может ещё устанавливаться)
+else Несоответствие, ошибка или тайм-аут
+  bridge -> bus : DeviceClaimFailed.v1 через outbox
+  bus -> registry : ClaimFailed; либо срабатывает ClaimTimeoutWorker
+  registry -> db : TX: FAILED / EXPIRED + освобождение резерва + outbox
+  registry -> bus : DeviceRevoked.v1 для компенсации
+  bus -> bridge : Отзыв промежуточных ACL и соединения
+  bridge -> mqtt : Запрет рабочих topics; cleanup provisioning
+end
+note over registry,bridge
+  Каждый consumer применяет eventId один раз и ACK после COMMIT.
+  Повторные/поздние подтверждения не активируют истёкший claim.
+  До ACTIVE функциональные сервисы не принимают команды;
+  перед доставкой интеграция повторно проверяет bindingVersion в реестре.
+end note
+
+@enduml

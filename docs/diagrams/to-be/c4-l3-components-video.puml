@@ -1,0 +1,51 @@
+@startuml c4-l3-components-video
+!pragma layout smetana
+!include <C4/C4_Component>
+LAYOUT_TOP_DOWN()
+
+title Тёплый дом — To-Be — C4 L3 / Components: Видеонаблюдение
+
+Container(gateway, "API Gateway", "Reverse proxy", "Маршрутизация пользовательских запросов с JWT.")
+Container(homes, "Пользователи и дома", "Java 21 / Spring Framework / REST", "Владение домами; проверка доступа. sub пользователя хранится из внешнего IdP.")
+Container(devices, "Устройства и модули", "Java 21 / Spring Framework / REST", "Каталог комплектов и возможностей; самостоятельное подключение и отзыв устройств.")
+Container(automation, "Сценарии", "Java 21 / Spring Framework / REST", "Редактор правил, триггеры, исполнение действий от имени владельца дома.")
+Container(media, "Медиашлюз", "WebRTC relay / STUN-TURN", "Готовая инфраструктура передачи видео.")
+ContainerQueue(bus, "Шина команд и событий", "RabbitMQ / TLS", "Очередь каждого потребителя, retry и DLQ.")
+ContainerDb(db, "video_db", "PostgreSQL", "камеры, сессии, команды потока, outbox/inbox")
+Container_Boundary(service, "Видеонаблюдение / Java 21 / Spring Framework / JVM-процесс") {
+Component(api, "Camera / Session API", "Java 21 / Spring MVC + Security", "Создать/закрыть сессию; 202 + sessionId; получить статус и viewer grant.")
+Component(sessions, "SessionManager", "Spring Framework / Java 21", "Проверяет права, привязку и capability; principal/house/camera/TTL в сессии.")
+Component(media_client, "MediaControlClient", "Spring HTTP client", "Создание/закрытие медиасессии; короткие разные grants для publisher/viewer.")
+Component(auth, "SessionIntrospection", "Spring Framework / Java 21", "Проверка активной сессии, роли, TTL и актуального права на дом.")
+Component(results, "StreamResultConsumer", "Spring AMQP / Java 21", "ACK готовности камеры и ошибки; не подменяет их готовностью RabbitMQ.")
+Component(expiry, "SessionExpiryWorker", "Spring Scheduling / Java 21", "Закрывает медиасессию при завершении/истечении; cleanup повторяемый.")
+Component(repo, "SessionRepository", "Spring JDBC / Spring TX", "Метаданные, состояние подготовки, inbox/outbox; видео не хранится.")
+Component(publisher, "OutboxPublisher", "Spring AMQP / Scheduling", "Команда подготовки/завершения потока и ограниченный publisher grant.")
+}
+Rel(gateway, api, "Камеры и сессии", "HTTP")
+Rel(automation, api, "Начать / закончить наблюдение", "HTTPS / mTLS")
+Rel(api, sessions, "Создание и завершение", "")
+Rel(sessions, homes, "Проверка владельца", "HTTPS / mTLS")
+Rel(sessions, devices, "ACTIVE-камера и её дом", "HTTPS / mTLS")
+Rel(sessions, media_client, "Подготовка медиасессии", "")
+Rel(media_client, media, "Создать / закрыть по sessionId идемпотентно", "HTTPS admin / mTLS")
+Rel(sessions, repo, "Сессия PREPARING и outbox атомарно", "")
+Rel(media, auth, "Проверка grants при старте / продлении", "HTTPS / mTLS")
+Rel(auth, repo, "Сессия, роль, TTL", "")
+Rel(auth, homes, "Актуальное право", "HTTPS / mTLS")
+Rel(bus, results, "CommandResult подготовки потока", "AMQP")
+Rel(results, repo, "inbox + статус камеры", "")
+Rel(expiry, repo, "Истечение TTL / незавершённая подготовка", "")
+Rel(expiry, media_client, "Закрытие при истечении / ошибке", "")
+Rel(publisher, repo, "Читает outbox", "")
+Rel(publisher, bus, "CommandRequested.v1", "AMQP")
+Rel(repo, db, "Только video_db", "SQL")
+note bottom of service
+Внешняя подготовка идемпотентна по sessionId; до commit статус не доступен зрителю.
+Сбой между созданием в медиашлюзе и commit компенсируется cleanup/TTL.
+READY требует ACK камеры и активной медиасессии. 202 ещё не разрешает просмотр.
+Готовый медиашлюз передаёт WebRTC; локальная камера подключается к домашнему шлюзу.
+Просмотр и продление требуют действующего права; видеоархив в MVP не входит.
+end note
+
+@enduml

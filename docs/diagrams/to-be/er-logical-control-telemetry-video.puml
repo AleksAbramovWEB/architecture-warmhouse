@@ -1,0 +1,148 @@
+@startuml er-logical-control-telemetry-video
+!pragma layout smetana
+hide circle
+hide methods
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+top to bottom direction
+
+title Тёплый дом — To-Be — ER / Logical: команды, состояния, телеметрия и видеосессии
+
+entity "DeviceBinding (ссылка)" as binding <<external reference>> #EEEEEE {
+*device_id : uuid <<REF>>
+*binding_version : bigint <<REF>>
+*house_id : uuid <<REF>>
+}
+package "heating_db / lighting_db / gates_db\nтри независимых экземпляра" {
+entity "Command" as command <<template>>  {
+*id : uuid <<PK>>
+--
+*device_id : uuid <<REF>>
+*binding_version : bigint <<REF>>
+*house_id : uuid <<REF>>
+*principal_id : text
+*requested_by_sub : text <<REF>>
+*idempotency_key : text
+*payload_hash : text
+*action : text
+*payload : jsonb
+*status : ACCEPTED / SUCCEEDED / FAILED / EXPIRED / UNKNOWN
+*created_at : timestamptz
+*expires_at : timestamptz
+completed_at : timestamptz
+failure_code : text
+}
+entity "DeviceState" as state <<template>>  {
+*device_id : uuid <<PK,REF>>
+*binding_version : bigint <<PK,REF>>
+--
+*house_id : uuid <<REF>>
+*state : jsonb
+*sequence : bigint
+*observed_at : timestamptz
+*received_at : timestamptz
+last_command_id : uuid <<FK>>
+}
+}
+package "telemetry_db" {
+entity "TelemetryData" as measurement  {
+*observed_at : timestamptz <<PK>>
+*id : uuid <<PK>>
+--
+*source_event_id : uuid
+*source_message_id : uuid
+*device_id : uuid <<REF>>
+*binding_version : bigint <<REF>>
+*house_id : uuid <<REF>>
+*metric : text
+*schema_version : integer
+*value : jsonb
+unit : text
+*quality : GOOD / UNCERTAIN
+*sequence : bigint
+*received_at : timestamptz
+}
+}
+package "video_db" {
+entity "Camera" as camera  {
+*device_id : uuid <<PK,REF>>
+*binding_version : bigint <<PK,REF>>
+--
+*house_id : uuid <<REF>>
+*name : text
+*enabled : boolean
+*created_at : timestamptz
+}
+entity "VideoSession" as session  {
+*id : uuid <<PK>>
+--
+*device_id : uuid <<FK>>
+*binding_version : bigint <<FK>>
+*house_id : uuid <<FK>>
+*viewer_sub : text <<REF>>
+*idempotency_key : text
+*payload_hash : text
+*status : PREPARING / READY / FAILED / ENDED / EXPIRED
+media_session_ref : text
+*created_at : timestamptz
+*expires_at : timestamptz
+closed_at : timestamptz
+}
+entity "VideoCommand" as video_command  {
+*id : uuid <<PK>>
+--
+*session_id : uuid <<FK>>
+*device_id : uuid <<FK>>
+*binding_version : bigint <<FK>>
+*house_id : uuid <<FK>>
+*action : PREPARE / STOP
+*payload : jsonb
+*status : ACCEPTED / SUCCEEDED / FAILED / EXPIRED / UNKNOWN
+*created_at : timestamptz
+*expires_at : timestamptz
+completed_at : timestamptz
+failure_code : text
+}
+}
+binding ||..o{ command : "адресат / версия привязки"
+binding ||..o| state : "снимок в каждом функциональном контексте"
+binding ||..o{ measurement : "источник / прежний дом сохраняется"
+command |o--o| state : "last_command_id"
+binding ||..o| camera : "только capability camera"
+camera ||--o{ session : "(device_id, binding_version, house_id)"
+session ||--o{ video_command : "(session_id, device_id, binding_version, house_id)"
+note bottom of command
+  Таблицы не общие: каждый сервис владеет своей копией Command/DeviceState.
+  UNIQUE(house_id, principal_id, idempotency_key); тот же ключ и другой hash → 409.
+  requested_by_sub — владелец, principal_id — нормализованный вызывающий субъект.
+  UNKNOWN не порождает новую команду; поздний ACK может уточнить результат.
+end note
+note bottom of measurement
+  Партиционирование по observed_at: PK включает время и id.
+  source_event_id дедуплицируется в локальной Inbox в транзакции с измерением.
+  Один TelemetryReceived соответствует одному измерению метрики.
+  source_message_id — стабильный ID исходного MQTT-сообщения комплекта.
+  Последнее показание читается по (house_id, device_id, binding_version, metric).
+  stale вычисляется по времени показания; не хранится как неизменный статус.
+end note
+note bottom of video_command
+  Camera: UNIQUE(device_id, binding_version, house_id).
+  VideoSession: UNIQUE(id, device_id, binding_version, house_id);
+  UNIQUE(house_id, viewer_sub, idempotency_key), сравнение payload_hash.
+  Составные локальные FK сохраняют дом и камеру сессии во всех командах потока.
+  В БД только метаданные; видеопоток и пароли камеры не сохраняются.
+  Временный publisher grant в Outbox удаляется после доставки/истечения.
+end note
+
+legend bottom left
+  ER / Logical — логическая модель данных, не уровень C4.
+  * — обязательный атрибут; PK — первичный ключ; FK — локальный внешний ключ.
+  REF — идентификатор другого владельца данных, SQL FK отсутствует.
+  || — ровно один; o| — ноль или один; o{ — ноль или много; |{ — один или много.
+  Сплошная связь — локальный FK; пунктир — логическая межсервисная ссылка.
+  Шаблон таблицы означает независимые копии в соответствующих БД.
+endlegend
+
+@enduml

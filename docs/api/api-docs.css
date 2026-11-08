@@ -1,0 +1,13 @@
+body { margin: 0; color: #243343; background: #fff; font-family: system-ui, sans-serif; }
+.docs-header { padding: 24px 32px 16px; border-bottom: 1px solid #dce3e9; background: #f7f9fb; }
+.docs-header h1 { margin: 0 0 8px; font-size: 27px; }
+.docs-header p { margin: 8px 0; }
+.docs-header nav { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 20px 0; }
+.docs-header a { color: #145c99; text-underline-offset: 4px; }
+.docs-header a[aria-current="page"] { font-weight: 700; color: #182f46; }
+.scope { color: #536474; font-size: 14px; max-width: 1000px; }
+.loading { margin: 24px 32px; }
+.error { color: #99271c; }
+#asyncapi { padding: 24px; }
+[hidden] { display: none !important; }
+@media (max-width: 640px) { .docs-header { padding: 20px 16px; } #asyncapi { padding: 12px; } }

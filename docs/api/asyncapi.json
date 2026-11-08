@@ -1,0 +1,1180 @@
+{
+  "asyncapi": "3.0.0",
+  "id": "urn:warmhouse:integration:selected-contracts:v1",
+  "info": {
+    "title": "Тёплый дом — Интеграция с устройствами / выбранные сообщения",
+    "version": "1.0.0",
+    "description": "Перспектива приложения «Интеграция с устройствами», Java 21 / Spring Framework. receive — приложение получает, send — отправляет. Срез: команды heating/lighting/gates, их результаты и нормализованная телеметрия. Bootstrap/claim, DeviceRegistered/Revoked, DeviceStateReported, видео и TelemetryRecorded не документируются этим срезом. Это проектные контракты, не развёрнутый брокер. Адрес .example иллюстративный. Бизнес-сообщения — JSON; RabbitMQ at-least-once, Inbox/Outbox, publisher confirms, consumer ACK после commit. Никаких гарантий exactly-once или глобального FIFO между разными очередями."
+  },
+  "servers": {
+    "target": {
+      "host": "broker.warmhouse.example:5671",
+      "pathname": "/warmhouse",
+      "protocol": "amqps",
+      "protocolVersion": "0.9.1",
+      "description": "Целевой RabbitMQ, vhost=warmhouse; TLS и отдельная учётная запись каждого сервиса.",
+      "security": [
+        {
+          "$ref": "#/components/securitySchemes/serviceAccount"
+        }
+      ]
+    }
+  },
+  "defaultContentType": "application/json",
+  "channels": {
+    "commandRequests": {
+      "address": "command.requested.v1",
+      "description": "Durable queue warmhouse.integration.commands.v1. Потребитель — Интеграция. Запросы пользователей напрямую в брокер не допускаются.",
+      "servers": [
+        {
+          "$ref": "#/servers/target"
+        }
+      ],
+      "messages": {
+        "CommandRequested": {
+          "$ref": "#/components/messages/CommandRequested"
+        }
+      },
+      "bindings": {
+        "amqp": {
+          "is": "routingKey",
+          "exchange": {
+            "name": "warmhouse.commands",
+            "type": "topic",
+            "durable": true,
+            "autoDelete": false,
+            "vhost": "warmhouse"
+          },
+          "bindingVersion": "0.3.0"
+        }
+      },
+      "x-queue": "warmhouse.integration.commands.v1"
+    },
+    "commandResults": {
+      "address": "command.result.{origin}.v1",
+      "description": "Отдельная очередь каждого владельца: warmhouse.<origin>.results.v1. Автоматизация получает копии в собственной warmhouse.automation.results.v1, не конкурируя с владельцем.",
+      "servers": [
+        {
+          "$ref": "#/servers/target"
+        }
+      ],
+      "messages": {
+        "CommandResult": {
+          "$ref": "#/components/messages/CommandResult"
+        }
+      },
+      "bindings": {
+        "amqp": {
+          "is": "routingKey",
+          "exchange": {
+            "name": "warmhouse.events",
+            "type": "topic",
+            "durable": true,
+            "autoDelete": false,
+            "vhost": "warmhouse"
+          },
+          "bindingVersion": "0.3.0"
+        }
+      },
+      "parameters": {
+        "origin": {
+          "enum": [
+            "heating",
+            "lighting",
+            "gates"
+          ],
+          "description": "Совпадает с payload.origin; определяет владельца команды."
+        }
+      },
+      "x-queues": [
+        "warmhouse.heating.results.v1",
+        "warmhouse.lighting.results.v1",
+        "warmhouse.gates.results.v1",
+        "warmhouse.automation.results.v1"
+      ]
+    },
+    "telemetryReceived": {
+      "address": "telemetry.received.v1",
+      "description": "Durable queue warmhouse.telemetry.ingest.v1. Потребитель — Телеметрия; после записи он публикует TelemetryRecorded.v1 (за рамками выбранного среза).",
+      "servers": [
+        {
+          "$ref": "#/servers/target"
+        }
+      ],
+      "messages": {
+        "TelemetryReceived": {
+          "$ref": "#/components/messages/TelemetryReceived"
+        }
+      },
+      "bindings": {
+        "amqp": {
+          "is": "routingKey",
+          "exchange": {
+            "name": "warmhouse.events",
+            "type": "topic",
+            "durable": true,
+            "autoDelete": false,
+            "vhost": "warmhouse"
+          },
+          "bindingVersion": "0.3.0"
+        }
+      },
+      "x-queue": "warmhouse.telemetry.ingest.v1"
+    }
+  },
+  "operations": {
+    "receiveCommands": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/commandRequests"
+      },
+      "summary": "Интеграция сохраняет Inbox+CommandDispatch, затем подтверждает AMQP. До доставки проверяет expiresAt, ACTIVE и точную версию привязки; проверка повторяется перед каждым retry.",
+      "messages": [
+        {
+          "$ref": "#/channels/commandRequests/messages/CommandRequested"
+        }
+      ],
+      "bindings": {
+        "amqp": {
+          "deliveryMode": 2,
+          "bindingVersion": "0.3.0",
+          "ack": true,
+          "mandatory": true
+        }
+      }
+    },
+    "sendCommandResults": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/commandResults"
+      },
+      "summary": "Интеграция записывает результат и Outbox атомарно. Приёмник применяет Inbox+статус+подтверждённое состояние транзакционно и ACK после commit. Поздний результат относится только к исходной версии привязки.",
+      "messages": [
+        {
+          "$ref": "#/channels/commandResults/messages/CommandResult"
+        }
+      ],
+      "bindings": {
+        "amqp": {
+          "deliveryMode": 2,
+          "bindingVersion": "0.3.0"
+        }
+      }
+    },
+    "sendTelemetry": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/telemetryReceived"
+      },
+      "summary": "Сначала Inbox для исходного MQTT message_id с областью deviceId/bindingVersion, нормализация и Outbox в одной TX. Повторы не создают новых eventId. Приёмник пишет Inbox+TelemetryData+Outbox TelemetryRecorded в одной TX.",
+      "messages": [
+        {
+          "$ref": "#/channels/telemetryReceived/messages/TelemetryReceived"
+        }
+      ],
+      "bindings": {
+        "amqp": {
+          "deliveryMode": 2,
+          "bindingVersion": "0.3.0"
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Uuid": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "description": "RFC 3339. В ответах время нормализуется в UTC."
+      },
+      "Domain": {
+        "type": "string",
+        "enum": [
+          "heating",
+          "lighting",
+          "gates"
+        ]
+      },
+      "BindingVersion": {
+        "type": "integer",
+        "minimum": 1,
+        "format": "int64"
+      },
+      "Metric": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.]{0,63}$"
+      },
+      "CommandFailure": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": true
+      },
+      "EnabledState": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": true
+      },
+      "GateState": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "CLOSED",
+              "OPENING",
+              "CLOSING",
+              "UNKNOWN"
+            ]
+          },
+          "lock": {
+            "type": "string",
+            "enum": [
+              "LOCKED",
+              "UNLOCKED",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "position",
+          "lock"
+        ],
+        "additionalProperties": true
+      },
+      "CommandExecutionResult": {
+        "type": "object",
+        "properties": {
+          "confirmedState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EnabledState"
+              },
+              {
+                "$ref": "#/components/schemas/GateState"
+              }
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "format": "int64"
+          },
+          "observedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "confirmedState",
+          "sequence",
+          "observedAt"
+        ],
+        "additionalProperties": true
+      },
+      "CommandOutcome": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACCEPTED",
+              "SUCCEEDED",
+              "FAILED",
+              "EXPIRED",
+              "UNKNOWN"
+            ]
+          },
+          "completedAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommandExecutionResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommandFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "completedAt",
+          "result",
+          "failure"
+        ],
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ACCEPTED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "type": "null"
+                },
+                "result": {
+                  "type": "null"
+                },
+                "failure": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "SUCCEEDED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/CommandExecutionResult"
+                },
+                "failure": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "FAILED",
+                    "EXPIRED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "result": {
+                  "type": "null"
+                },
+                "failure": {
+                  "$ref": "#/components/schemas/CommandFailure"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "EXPIRED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "failure": {
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "DEADLINE_BEFORE_SEND"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "UNKNOWN"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "type": "null"
+                },
+                "result": {
+                  "type": "null"
+                },
+                "failure": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/CommandFailure"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ACK_TIMEOUT"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "HeatingEnabledAction": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "heating.setEnabled"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "heating.setEnabled"
+      },
+      "LightEnabledAction": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "lighting.setEnabled"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "lighting.setEnabled"
+      },
+      "GatePositionAction": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "gates.setPosition"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "position": {
+                "type": "string",
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ]
+              }
+            },
+            "required": [
+              "position"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "gates.setPosition"
+      },
+      "GateLockAction": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "gates.setLock"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "lock": {
+                "type": "string",
+                "enum": [
+                  "LOCKED",
+                  "UNLOCKED"
+                ]
+              }
+            },
+            "required": [
+              "lock"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "gates.setLock"
+      },
+      "CommandAction": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HeatingEnabledAction"
+          },
+          {
+            "$ref": "#/components/schemas/LightEnabledAction"
+          },
+          {
+            "$ref": "#/components/schemas/GatePositionAction"
+          },
+          {
+            "$ref": "#/components/schemas/GateLockAction"
+          }
+        ]
+      },
+      "MetricValue": {
+        "oneOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string",
+            "maxLength": 4096
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "object",
+            "maxProperties": 64
+          },
+          {
+            "type": "array",
+            "maxItems": 128
+          }
+        ],
+        "description": "Тип и единица дополнительно проверяются по telemetry_schema DeviceType, а не только этой общей схеме."
+      },
+      "Measurement": {
+        "type": "object",
+        "properties": {
+          "measurementId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "sourceMessageId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/Metric"
+          },
+          "value": {
+            "$ref": "#/components/schemas/MetricValue"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "GOOD",
+              "UNCERTAIN"
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "format": "int64"
+          },
+          "observedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "receivedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "measurementId",
+          "sourceMessageId",
+          "deviceId",
+          "houseId",
+          "bindingVersion",
+          "metric",
+          "value",
+          "unit",
+          "quality",
+          "sequence",
+          "observedAt",
+          "receivedAt"
+        ],
+        "additionalProperties": true
+      },
+      "CommandRequestedEvent": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "CommandRequested.v1"
+            ]
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "correlationId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "causationId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/Domain"
+          },
+          "commandId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CommandAction"
+          }
+        },
+        "required": [
+          "eventId",
+          "eventType",
+          "schemaVersion",
+          "houseId",
+          "deviceId",
+          "bindingVersion",
+          "correlationId",
+          "causationId",
+          "occurredAt",
+          "origin",
+          "commandId",
+          "expiresAt",
+          "data"
+        ],
+        "additionalProperties": true,
+        "description": "Функциональный сервис → интеграция. Проверять origin, активную привязку, capability и expiresAt перед каждой отправкой. Новая попытка доставки сохраняет commandId/eventId.",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "heating"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/HeatingEnabledAction"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "lighting"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LightEnabledAction"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "gates"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/GatePositionAction"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GateLockAction"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "CommandResultData": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CommandOutcome"
+          },
+          {
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "SUCCEEDED",
+                  "FAILED",
+                  "EXPIRED",
+                  "UNKNOWN"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "CommandResultEvent": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "CommandResult.v1"
+            ]
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "correlationId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "causationId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/Domain"
+          },
+          "commandId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CommandResultData"
+          }
+        },
+        "required": [
+          "eventId",
+          "eventType",
+          "schemaVersion",
+          "houseId",
+          "deviceId",
+          "bindingVersion",
+          "correlationId",
+          "causationId",
+          "occurredAt",
+          "origin",
+          "commandId",
+          "expiresAt",
+          "data"
+        ],
+        "additionalProperties": true,
+        "description": "Интеграция → сервис-владелец. Сопоставляются commandId, дом, устройство и версия исходной команды. PUBACK не создаёт SUCCEEDED; требуется ACK исполнения."
+      },
+      "TelemetryReceivedEvent": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "TelemetryReceived.v1"
+            ]
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "correlationId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "causationId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Measurement"
+          }
+        },
+        "required": [
+          "eventId",
+          "eventType",
+          "schemaVersion",
+          "houseId",
+          "deviceId",
+          "bindingVersion",
+          "correlationId",
+          "causationId",
+          "occurredAt",
+          "data"
+        ],
+        "additionalProperties": true,
+        "description": "Интеграция → Телеметрия. Один event — одна метрика. houseId/deviceId/bindingVersion берутся из проверенной серверной привязки и совпадают с data. sourceMessageId стабилен при повторе MQTT. data.measurementId сохраняется как TelemetryData.id, eventId — source_event_id."
+      }
+    },
+    "messages": {
+      "CommandRequested": {
+        "name": "CommandRequested.v1",
+        "title": "Запрос исполнения команды",
+        "summary": "Команда для интеграции от отопления, освещения или ворот.",
+        "payload": {
+          "$ref": "#/components/schemas/CommandRequestedEvent"
+        },
+        "examples": [
+          {
+            "name": "enableHeating",
+            "payload": {
+              "schemaVersion": 1,
+              "houseId": "10000000-0000-4000-8000-000000000001",
+              "deviceId": "10000000-0000-4000-8000-000000000003",
+              "bindingVersion": 4,
+              "correlationId": "10000000-0000-4000-8000-000000000006",
+              "causationId": "10000000-0000-4000-8000-000000000007",
+              "occurredAt": "2026-11-08T12:00:00Z",
+              "eventId": "10000000-0000-4000-8000-000000000040",
+              "eventType": "CommandRequested.v1",
+              "origin": "heating",
+              "commandId": "10000000-0000-4000-8000-000000000006",
+              "expiresAt": "2026-11-08T12:00:30Z",
+              "data": {
+                "action": "heating.setEnabled",
+                "payload": {
+                  "enabled": true
+                }
+              }
+            }
+          }
+        ],
+        "contentType": "application/json",
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "CommandResult": {
+        "name": "CommandResult.v1",
+        "title": "Результат команды",
+        "summary": "Подтверждённое исполнение/отказ либо явно неизвестный результат.",
+        "payload": {
+          "$ref": "#/components/schemas/CommandResultEvent"
+        },
+        "examples": [
+          {
+            "name": "succeeded",
+            "payload": {
+              "schemaVersion": 1,
+              "houseId": "10000000-0000-4000-8000-000000000001",
+              "deviceId": "10000000-0000-4000-8000-000000000003",
+              "bindingVersion": 4,
+              "correlationId": "10000000-0000-4000-8000-000000000006",
+              "causationId": "10000000-0000-4000-8000-000000000040",
+              "occurredAt": "2026-11-08T12:00:02Z",
+              "eventId": "10000000-0000-4000-8000-000000000041",
+              "eventType": "CommandResult.v1",
+              "origin": "heating",
+              "commandId": "10000000-0000-4000-8000-000000000006",
+              "expiresAt": "2026-11-08T12:00:30Z",
+              "data": {
+                "status": "SUCCEEDED",
+                "completedAt": "2026-11-08T12:00:02Z",
+                "result": {
+                  "confirmedState": {
+                    "enabled": true
+                  },
+                  "sequence": 42,
+                  "observedAt": "2026-11-08T12:00:01Z"
+                },
+                "failure": null
+              }
+            }
+          },
+          {
+            "name": "unknown",
+            "payload": {
+              "schemaVersion": 1,
+              "houseId": "10000000-0000-4000-8000-000000000001",
+              "deviceId": "10000000-0000-4000-8000-000000000003",
+              "bindingVersion": 4,
+              "correlationId": "10000000-0000-4000-8000-000000000006",
+              "causationId": "10000000-0000-4000-8000-000000000040",
+              "occurredAt": "2026-11-08T12:00:30Z",
+              "eventId": "10000000-0000-4000-8000-000000000042",
+              "eventType": "CommandResult.v1",
+              "origin": "heating",
+              "commandId": "10000000-0000-4000-8000-000000000006",
+              "expiresAt": "2026-11-08T12:00:30Z",
+              "data": {
+                "status": "UNKNOWN",
+                "completedAt": null,
+                "result": null,
+                "failure": {
+                  "code": "ACK_TIMEOUT",
+                  "message": "Исполнение не подтверждено. Не создавайте новую команду автоматически."
+                }
+              }
+            }
+          }
+        ],
+        "contentType": "application/json",
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      },
+      "TelemetryReceived": {
+        "name": "TelemetryReceived.v1",
+        "title": "Нормализованное измерение",
+        "summary": "Показание готово к проверке и сохранению сервисом телеметрии.",
+        "payload": {
+          "$ref": "#/components/schemas/TelemetryReceivedEvent"
+        },
+        "examples": [
+          {
+            "name": "temperature",
+            "payload": {
+              "schemaVersion": 1,
+              "houseId": "10000000-0000-4000-8000-000000000001",
+              "deviceId": "10000000-0000-4000-8000-000000000003",
+              "bindingVersion": 4,
+              "correlationId": "10000000-0000-4000-8000-000000000021",
+              "causationId": "10000000-0000-4000-8000-000000000021",
+              "occurredAt": "2026-11-08T12:00:01Z",
+              "eventId": "10000000-0000-4000-8000-000000000043",
+              "eventType": "TelemetryReceived.v1",
+              "data": {
+                "measurementId": "10000000-0000-4000-8000-000000000020",
+                "sourceMessageId": "10000000-0000-4000-8000-000000000021",
+                "deviceId": "10000000-0000-4000-8000-000000000003",
+                "houseId": "10000000-0000-4000-8000-000000000001",
+                "bindingVersion": 4,
+                "metric": "temperature",
+                "value": 23.5,
+                "unit": "Cel",
+                "quality": "GOOD",
+                "sequence": 43,
+                "observedAt": "2026-11-08T12:00:00Z",
+                "receivedAt": "2026-11-08T12:00:01Z"
+              }
+            }
+          }
+        ],
+        "contentType": "application/json",
+        "correlationId": {
+          "location": "$message.payload#/correlationId"
+        }
+      }
+    },
+    "securitySchemes": {
+      "serviceAccount": {
+        "type": "userPassword",
+        "description": "Секрет из окружения сервиса, не пользовательский JWT. ACL разрешает каждому сервису только его exchange/routing keys и очереди."
+      }
+    }
+  },
+  "x-delivery-policy": {
+    "delivery": "at-least-once",
+    "publisherConfirms": true,
+    "persistentMessages": true,
+    "unroutableMessages": "Вернуть отправителю (mandatory), повторять с прежним eventId до deadline.",
+    "consumerAck": "Только после commit локального Inbox и изменения.",
+    "retry": "Ограниченные повторы с backoff для временных ошибок; неподдержанная схема/невалидные данные — DLQ без бесконечного retry.",
+    "commandExpiry": "Сверять expiresAt по серверным часам перед каждым отправлением; MQTT retain=false, QoS1 и expiry. Просроченное не переигрывается даже из DLQ.",
+    "commandResult": "Один commandId; успех только по ACK исполнения, UNKNOWN при отсутствии ACK. Статус хранит сервис-владелец.",
+    "routing": "origin в routing key результатов равен payload.origin. Получатель сверяет дом, deviceId и bindingVersion с сохранённой командой.",
+    "evolution": "schemaVersion=1 и *.v1. Необязательные поля envelope допускаются; изменение обязательных полей, action или формы строго типизированного payload требует новой версии канала/схемы."
+  }
+}

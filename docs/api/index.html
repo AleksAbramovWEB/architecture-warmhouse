@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Проектные контракты REST и сообщений экосистемы Тёплый дом">
+  <title>Тёплый дом — API</title>
+  <link rel="stylesheet" href="api-docs.css">
+</head>
+<body>
+  <header class="docs-header">
+    <h1>Тёплый дом · API</h1>
+    <p>To-Be · Java 21 / Spring Framework · версия контрактов 1.0.0</p>
+    <nav aria-label="Контракты API">
+      <a href="#rest" id="rest-link" aria-current="page">REST · 5 операций</a>
+      <a href="#events" id="events-link">Сообщения · 3 канала</a>
+      <a href="openapi.json" target="_blank" rel="noreferrer">OpenAPI JSON ↗</a>
+      <a href="asyncapi.json" target="_blank" rel="noreferrer">AsyncAPI JSON ↗</a>
+    </nav>
+    <p class="scope">Проектные контракты. REST-операции доступны для просмотра; отправка запросов отключена.
+      Страница использует Swagger UI и AsyncAPI React из CDN с фиксированными версиями.</p>
+  </header>
+  <main>
+    <section id="rest-section" aria-label="REST API">
+      <p id="rest-status" class="loading" role="status">Загрузка Swagger UI…</p>
+      <div id="swagger-ui"></div>
+    </section>
+    <section id="events-section" aria-label="Контракт сообщений" hidden>
+      <p id="events-status" class="loading" role="status">Загрузка AsyncAPI…</p>
+      <div id="asyncapi"></div>
+    </section>
+  </main>
+  <script src="api-docs.js"></script>
+</body>
+</html>

@@ -189,6 +189,11 @@ build/
 ### Mac OS ###
 .DS_Store
 
+# Local credentials; only examples belong in Git.
+.env
+.env.*
+!.env.example
+
 
 tmp/
 task-*
