@@ -1,0 +1,137 @@
+@startuml er-logical-integration-messaging
+!pragma layout smetana
+hide circle
+hide methods
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+top to bottom direction
+
+title Тёплый дом — To-Be — ER / Logical: интеграция с оборудованием и шаблоны Inbox/Outbox
+
+entity "DeviceBinding (ссылка)" as binding <<external reference>> #EEEEEE {
+*device_id : uuid <<REF>>
+*binding_version : bigint <<REF>>
+*house_id : uuid <<REF>>
+}
+entity "DeviceClaim (ссылка)" as claim_ref <<external reference>> #EEEEEE {
+*id : uuid <<REF>>
+}
+entity "Command / VideoCommand (ссылка)" as command_ref <<external reference>> #EEEEEE {
+*id : uuid <<REF>>
+}
+package "integration_db — Интеграция с устройствами" {
+entity "DeviceConnection" as connection  {
+*device_id : uuid <<PK,REF>>
+*binding_version : bigint <<PK,REF>>
+--
+*house_id : uuid <<REF>>
+*mqtt_client_id : text
+*protocol_profile : text
+*identity_fingerprint : text
+*status : OFFLINE / ONLINE / BLOCKED
+*acl_status : PENDING / ACTIVE / BLOCKED
+last_seen_at : timestamptz
+*updated_at : timestamptz
+}
+entity "DeviceProvisioning" as provision  {
+*claim_id : uuid <<PK,REF>>
+--
+*device_id : uuid <<FK>>
+*binding_version : bigint <<FK>>
+*nonce_hash : text
+*status : PENDING / VERIFIED / ACTIVE / FAILED / REVOKED
+*expires_at : timestamptz
+*updated_at : timestamptz
+failure_code : text
+}
+entity "CommandDispatch" as dispatch  {
+*command_id : uuid <<PK,REF>>
+--
+*origin_service : HEATING / LIGHTING / GATES / VIDEO
+*device_id : uuid <<FK>>
+*binding_version : bigint <<FK>>
+*house_id : uuid <<FK>>
+*action : text
+*payload : jsonb
+*status : QUEUED / SENT / SUCCEEDED / FAILED / EXPIRED / UNKNOWN
+*expires_at : timestamptz
+*attempt_count : integer
+next_attempt_at : timestamptz
+lease_owner : text
+lease_until : timestamptz
+device_ack_at : timestamptz
+}
+}
+package "Шаблоны, отдельные в БД каждого участника обмена" {
+entity "Inbox" as inbox <<template>>  {
+*consumer_name : text <<PK>>
+*event_id : uuid <<PK>>
+--
+*event_type : text
+*schema_version : integer
+*processed_at : timestamptz
+}
+entity "Outbox" as outbox <<template>>  {
+*event_id : uuid <<PK>>
+--
+*event_type : text
+*schema_version : integer
+*aggregate_type : text
+*aggregate_id : text
+*payload : jsonb
+*occurred_at : timestamptz
+*available_at : timestamptz
+*attempt_count : integer
+lease_owner : text
+lease_until : timestamptz
+published_at : timestamptz
+}
+}
+binding ||..o| connection : "подтверждённая серверная привязка"
+claim_ref ||..o| provision : "claim_id"
+connection ||--o| provision : "(device_id, binding_version)"
+connection ||--o{ dispatch : "(device_id, binding_version, house_id)"
+command_ref ||..o| dispatch : "command_id / глобальный UUID команды"
+
+' Place technical table templates below integration entities.
+dispatch -[hidden]down-> inbox
+inbox -[hidden]right-> outbox
+note bottom of connection
+  Это локальная проекция привязки, не её источник истины.
+  UNIQUE(device_id, binding_version, house_id) — цель FK CommandDispatch.
+  При отставании событий строка создаётся/сверяется по API реестра перед dispatch.
+  Перед каждой отправкой повторно проверяются ACTIVE, дом, версия и expires_at.
+  UNIQUE(mqtt_client_id) WHERE status = 'ONLINE'; устаревшие соединения блокируются.
+end note
+note bottom of provision
+  Проверяет заводскую идентичность и challenge; рабочие ACL только после DeviceRegistered.
+  Результат проверки и outbox записываются атомарно; тайм-аут имеет компенсацию.
+  Настоящие приватные ключи и пароли не хранятся в этих сущностях.
+end note
+note bottom of inbox
+  У каждой группы потребителей свой consumer_name; один event_id применяется один раз.
+  Для MQTT: consumer_name включает device_id + binding_version, event_id = message_id прибора.
+  message_id не меняется при повторе; нормализация и outbox выполняются один раз.
+  Inbox + доменное изменение (+ Outbox, если есть исходящее событие) — одна локальная TX.
+  ACK брокеру после commit. В Inbox нет FK к Outbox другого сервиса.
+  Срок хранения ключей покрывает весь допустимый период повторной доставки/replay.
+end note
+note bottom of outbox
+  Payload содержит envelope: houseId, deviceId, bindingVersion, correlationId, causationId.
+  aggregate_id не FK: ссылка на агрегат определяется aggregate_type в той же БД.
+  Шаблон нужен devices/heating/lighting/gates/video/telemetry/integration.
+  automation использует Inbox и долговечные ActionExecution для исходящих HTTP-вызовов.
+end note
+
+legend bottom left
+  ER / Logical — логическая модель данных, не уровень C4.
+  * — обязательный атрибут; PK — первичный ключ; FK — локальный внешний ключ.
+  REF — идентификатор другого владельца данных, SQL FK отсутствует.
+  || — ровно один; o| — ноль или один; o{ — ноль или много; |{ — один или много.
+  Сплошная связь — локальный FK; пунктир — логическая межсервисная ссылка.
+  Шаблон таблицы означает независимые копии в соответствующих БД.
+endlegend
+
+@enduml

@@ -1,0 +1,134 @@
+@startuml er-logical-device-registry
+!pragma layout smetana
+hide circle
+hide methods
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+top to bottom direction
+
+title Тёплый дом — To-Be — ER / Logical: дома, каталог комплектов и регистрация устройств
+
+entity "House (ссылка)" as house <<external reference>> #EEEEEE {
+*id : uuid <<REF>>
+*owner_sub : text <<REF>>
+}
+package "devices_db — Устройства и модули" {
+entity "ModuleType" as module_type  {
+*id : uuid <<PK>>
+--
+*code : text
+*version : integer
+*name : text
+*category : HEATING / LIGHTING / GATES / VIDEO / SENSOR
+*published : boolean
+*created_at : timestamptz
+}
+entity "ModuleTypeDeviceType" as composition  {
+*module_type_id : uuid <<PK,FK>>
+*device_type_id : uuid <<PK,FK>>
+--
+*min_count : integer
+*max_count : integer
+}
+entity "DeviceType" as device_type  {
+*id : uuid <<PK>>
+--
+*code : text
+*version : integer
+*name : text
+*protocol_profile : text
+*capabilities_schema : jsonb
+*telemetry_schema : jsonb
+*created_at : timestamptz
+}
+entity "Module" as module  {
+*id : uuid <<PK>>
+--
+*module_type_id : uuid <<FK>>
+*house_id : uuid <<REF>>
+*name : text
+*status : SETUP / ACTIVE / DISABLED
+*configuration : jsonb
+*created_at : timestamptz
+}
+entity "Device" as device  {
+*id : uuid <<PK>>
+--
+*type_id : uuid <<FK>>
+*serial_number : text <<UQ>>
+*factory_identity_ref : text <<UQ>>
+claim_code_hash : text
+code_consumed_at : timestamptz
+*next_binding_version : bigint
+*created_at : timestamptz
+}
+entity "DeviceBinding" as binding  {
+*device_id : uuid <<PK,FK>>
+*binding_version : bigint <<PK>>
+--
+*module_id : uuid <<FK>>
+*house_id : uuid <<REF>>
+*status : PENDING / ACTIVE / REVOKED
+*configuration : jsonb
+*created_at : timestamptz
+activated_at : timestamptz
+revoked_at : timestamptz
+}
+entity "DeviceClaim" as claim  {
+*id : uuid <<PK>>
+--
+*device_id : uuid <<FK>>
+*binding_version : bigint <<FK>>
+*requested_by_sub : text <<REF>>
+*nonce_hash : text
+*status : PENDING / ACTIVE / FAILED / EXPIRED
+*expires_at : timestamptz
+*created_at : timestamptz
+completed_at : timestamptz
+failure_code : text
+}
+}
+house ||..o{ module : "house_id"
+house ||..o{ binding : "house_id"
+module_type ||--o{ module : "module_type_id"
+module_type ||--o{ composition : "module_type_id / >= 1 при published"
+device_type ||--o{ composition : "device_type_id"
+device_type ||--o{ device : "type_id"
+module ||--o{ binding : "(module_id, house_id)"
+device ||--o{ binding : "device_id"
+binding ||--|| claim : "(device_id, binding_version) / одна попытка"
+note bottom of composition
+  M:N ModuleType ↔ DeviceType раскрыта таблицей состава.
+  UNIQUE(code, version) — отдельно для ModuleType и DeviceType.
+  Опубликованный тип комплекта имеет хотя бы одну позицию состава.
+  min_count >= 1; max_count >= min_count.
+  Тип и версия фиксируются UUID строки каталога и не меняются задним числом.
+end note
+note bottom of binding
+  PK(device_id, binding_version). Версия выделяется атомарно и не переиспользуется.
+  UNIQUE(device_id) WHERE status IN ('PENDING', 'ACTIVE') — одна текущая привязка.
+  Составной FK (module_id, house_id) → Module(id, house_id);
+  для этого в Module задаётся UNIQUE(id, house_id).
+  Перед ACTIVE-привязкой проверяются разрешённый тип и max_count.
+  Module получает ACTIVE только после достижения min_count всех позиций состава.
+end note
+note bottom of claim
+  UNIQUE(device_id, binding_version) связывает одну попытку с одной привязкой.
+  Claim и PENDING-привязка создаются в одной транзакции.
+  При успехе оба получают ACTIVE; при отказе/истечении привязка REVOKED.
+  Код подключения хранится как hash и потребляется один раз после проверки прибора.
+  Состояние on/off не относится к жизненному циклу подключения: оно в DeviceState.
+end note
+
+legend bottom left
+  ER / Logical — логическая модель данных, не уровень C4.
+  * — обязательный атрибут; PK — первичный ключ; FK — локальный внешний ключ.
+  REF — идентификатор другого владельца данных, SQL FK отсутствует.
+  || — ровно один; o| — ноль или один; o{ — ноль или много; |{ — один или много.
+  Сплошная связь — локальный FK; пунктир — логическая межсервисная ссылка.
+  Шаблон таблицы означает независимые копии в соответствующих БД.
+endlegend
+
+@enduml

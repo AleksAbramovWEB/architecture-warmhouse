@@ -1,0 +1,155 @@
+@startuml er-logical-domain-overview
+!pragma layout smetana
+hide circle
+hide methods
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+top to bottom direction
+
+title Тёплый дом — To-Be — ER / Logical: обзор домена и владельцы данных
+
+package "Внешний OIDC IdP — не БД приложения" {
+entity "User" as user <<external>> #EEEEEE {
+*sub : text <<identity>>
+--
+display_name : text
+}
+}
+package "homes_db" {
+entity "House" as house  {
+*id : uuid <<PK>>
+--
+*owner_sub : text <<REF>>
+*name : text
+*address : text
+}
+}
+package "devices_db" {
+entity "ModuleType" as module_type  {
+*id : uuid <<PK>>
+--
+*code : text
+*version : integer
+}
+entity "ModuleTypeDeviceType" as composition  {
+*module_type_id : uuid <<PK,FK>>
+*device_type_id : uuid <<PK,FK>>
+--
+*min_count : integer
+*max_count : integer
+}
+entity "DeviceType" as device_type  {
+*id : uuid <<PK>>
+--
+*code : text
+*version : integer
+*capabilities_schema : jsonb
+}
+entity "Module" as module  {
+*id : uuid <<PK>>
+--
+*module_type_id : uuid <<FK>>
+*house_id : uuid <<REF>>
+*name : text
+}
+entity "Device" as device  {
+*id : uuid <<PK>>
+--
+*type_id : uuid <<FK>>
+*serial_number : text <<UQ>>
+*next_binding_version : bigint
+}
+entity "DeviceBinding" as binding  {
+*device_id : uuid <<PK,FK>>
+*binding_version : bigint <<PK>>
+--
+*module_id : uuid <<FK>>
+*house_id : uuid <<REF>>
+*status : PENDING / ACTIVE / REVOKED
+}
+}
+package "telemetry_db" {
+entity "TelemetryData" as measurement  {
+*observed_at : timestamptz <<PK>>
+*id : uuid <<PK>>
+--
+*device_id : uuid <<REF>>
+*binding_version : bigint <<REF>>
+*house_id : uuid <<REF>>
+*metric : text
+*value : jsonb
+unit : text
+}
+}
+package "automation_db" {
+entity "Scenario" as scenario  {
+*id : uuid <<PK>>
+--
+*house_id : uuid <<REF>>
+*owner_sub : text <<REF>>
+*name : text
+*enabled : boolean
+}
+}
+package "heating_db / lighting_db / gates_db / video_db\nнезависимые таблицы команд" {
+entity "Command / VideoCommand" as command <<template>>  {
+*id : uuid <<PK>>
+--
+*device_id : uuid <<REF>>
+*binding_version : bigint <<REF>>
+*house_id : uuid <<REF>>
+*action : text
+*status : text
+*expires_at : timestamptz
+}
+}
+package "video_db" {
+entity "VideoSession" as session  {
+*id : uuid <<PK>>
+--
+*device_id : uuid <<FK>>
+*binding_version : bigint <<FK>>
+*house_id : uuid <<REF>>
+*viewer_sub : text <<REF>>
+*status : text
+*expires_at : timestamptz
+}
+}
+user ||..o{ house : "owner_sub / владеет"
+house ||..o{ module : "house_id / установлены"
+module_type ||--o{ module : "тип комплекта"
+module_type ||--o{ composition : "состав / >= 1 при published"
+device_type ||--o{ composition : "разрешённые типы устройств"
+device_type ||--o{ device : "type_id"
+module ||--o{ binding : "включает подключения"
+device ||--o{ binding : "история подключений"
+house ||..o{ binding : "дом подключения"
+binding ||..o{ measurement : "источник показаний"
+house ||..o{ scenario : "сценарии дома"
+binding ||..o{ command : "адресат команды"
+binding ||..o{ session : "камера (через Camera в video_db)"
+user ||..o{ session : "viewer_sub / просматривает"
+note bottom of binding
+  Device — физическое оборудование; DeviceBinding — его подключение.
+  Одновременно у устройства не более одной PENDING/ACTIVE-привязки.
+  House и Module привязки относятся к одному дому.
+  После отзыва история и прежняя binding_version сохраняются.
+end note
+note bottom of session
+  Обзор ключевых сущностей; Camera, версии сценариев, исполнения,
+  интеграция и технические таблицы раскрыты на детальных ER-диаграммах.
+  User — внешняя сущность IdP, локальная таблица пользователей не создаётся.
+end note
+
+legend bottom left
+  ER / Logical — логическая модель данных, не уровень C4.
+  * — обязательный атрибут; PK — первичный ключ; FK — локальный внешний ключ.
+  REF — идентификатор другого владельца данных, SQL FK отсутствует.
+  || — ровно один; o| — ноль или один; o{ — ноль или много; |{ — один или много.
+  Сплошная связь — локальный FK; пунктир — логическая межсервисная ссылка.
+  Шаблон таблицы означает независимые копии в соответствующих БД.
+endlegend
+
+@enduml

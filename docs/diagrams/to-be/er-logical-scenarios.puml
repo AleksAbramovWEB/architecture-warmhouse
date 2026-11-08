@@ -1,0 +1,139 @@
+@startuml er-logical-scenarios
+!pragma layout smetana
+hide circle
+hide methods
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+top to bottom direction
+
+title Тёплый дом — To-Be — ER / Logical: версии сценариев, триггеры и исполнение действий
+
+entity "House (ссылка)" as house <<external reference>> #EEEEEE {
+*id : uuid <<REF>>
+*owner_sub : text <<REF>>
+}
+entity "DeviceBinding (ссылка)" as binding <<external reference>> #EEEEEE {
+*device_id : uuid <<REF>>
+*binding_version : bigint <<REF>>
+*house_id : uuid <<REF>>
+}
+entity "Command / VideoSession (ссылка)" as command_ref <<external reference>> #EEEEEE {
+*origin_service : text
+*resource_id : uuid <<REF>>
+}
+package "automation_db — Сценарии" {
+entity "Scenario" as scenario  {
+*id : uuid <<PK>>
+--
+*house_id : uuid <<REF>>
+*owner_sub : text <<REF>>
+*name : text
+*enabled : boolean
+*created_at : timestamptz
+*updated_at : timestamptz
+}
+entity "ScenarioVersion" as version  {
+*scenario_id : uuid <<PK,FK>>
+*version : integer <<PK>>
+--
+*status : DRAFT / ACTIVE / ARCHIVED
+*trigger_type : TELEMETRY / SCHEDULE
+source_device_id : uuid <<REF>>
+source_binding_version : bigint <<REF>>
+*trigger_definition : jsonb
+*max_data_age_seconds : integer
+*cooldown_seconds : integer
+*max_chain_depth : integer
+*created_at : timestamptz
+}
+entity "ScenarioAction" as action  {
+*scenario_id : uuid <<PK,FK>>
+*scenario_version : integer <<PK,FK>>
+*action_index : integer <<PK>>
+--
+*target_device_id : uuid <<REF>>
+*target_binding_version : bigint <<REF>>
+*target_service : HEATING / LIGHTING / GATES / VIDEO
+*action : text
+*parameters : jsonb
+*deadline_seconds : integer
+}
+entity "ScheduleCursor" as cursor  {
+*scenario_id : uuid <<PK,FK>>
+*scenario_version : integer <<PK,FK>>
+--
+*next_fire_at : timestamptz
+lease_owner : text
+lease_until : timestamptz
+last_trigger_id : text
+}
+entity "ScenarioRun" as run  {
+*id : uuid <<PK>>
+--
+*scenario_id : uuid <<FK>>
+*scenario_version : integer <<FK>>
+*owner_sub : text <<REF>>
+*trigger_id : text
+*triggered_at : timestamptz
+*status : RUNNING / SUCCEEDED / FAILED / UNKNOWN
+*causation_id : uuid
+*chain_depth : integer
+*started_at : timestamptz
+finished_at : timestamptz
+}
+entity "ActionExecution" as execution  {
+*run_id : uuid <<PK,FK>>
+*action_index : integer <<PK,FK>>
+--
+*scenario_id : uuid <<FK>>
+*scenario_version : integer <<FK>>
+*idempotency_key : text <<UQ>>
+*status : PENDING / ACCEPTED / SUCCEEDED / FAILED / EXPIRED / UNKNOWN
+remote_resource_id : uuid <<REF>>
+*attempt_count : integer
+next_attempt_at : timestamptz
+*expires_at : timestamptz
+lease_owner : text
+lease_until : timestamptz
+failure_code : text
+}
+}
+house ||..o{ scenario : "house_id / owner_sub"
+scenario ||--o{ version : "scenario_id"
+version ||--o{ action : "(scenario_id, version)"
+version ||--o| cursor : "только SCHEDULE"
+version ||--o{ run : "(scenario_id, version)"
+run ||--o{ execution : "(run_id, scenario_id, scenario_version)"
+action ||--o{ execution : "(scenario_id, scenario_version, action_index)"
+binding |o..o{ version : "источник TELEMETRY"
+binding ||..o{ action : "цель действия"
+command_ref |o..o{ execution : "id результата / target_service из действия"
+note bottom of version
+  Конфигурация опубликованной версии неизменна; правка создаёт новую версию.
+  Не более одной ACTIVE-версии на Scenario (частичный UNIQUE).
+  Включённый Scenario имеет ACTIVE-версию и хотя бы одно действие.
+  TELEMETRY: обязательны source_device_id + version, metric/оператор/порог в DSL.
+  SCHEDULE: источник NULL; в trigger_definition заданы cron и IANA timezone.
+  Изменяемые next_fire_at и lease вынесены в ScheduleCursor.
+end note
+note bottom of execution
+  UNIQUE ScenarioRun(scenario_id, scenario_version, trigger_id).
+  UNIQUE ScenarioRun(id, scenario_id, scenario_version) служит целью составного FK задачи.
+  Вторая составная ссылка идёт на ScenarioAction той же версии и action_index.
+  PK(run_id, action_index) исключает повторное создание одного действия запуска.
+  Retry использует прежний idempotency_key; remote_resource_id — commandId или sessionId.
+  Для VIDEO статус берётся из VideoSession, для остальных — из Command своего сервиса.
+end note
+
+legend bottom left
+  ER / Logical — логическая модель данных, не уровень C4.
+  * — обязательный атрибут; PK — первичный ключ; FK — локальный внешний ключ.
+  REF — идентификатор другого владельца данных, SQL FK отсутствует.
+  || — ровно один; o| — ноль или один; o{ — ноль или много; |{ — один или много.
+  Сплошная связь — локальный FK; пунктир — логическая межсервисная ссылка.
+  Шаблон таблицы означает независимые копии в соответствующих БД.
+endlegend
+
+@enduml
