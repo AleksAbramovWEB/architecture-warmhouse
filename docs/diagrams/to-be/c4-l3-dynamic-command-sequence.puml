@@ -26,7 +26,7 @@ end note
 api -> db : TX: submitOrGet(key, payloadHash), command + outbox
 alt Ключ уже есть с тем же payloadHash
   db --> api : Прежний commandId; новая запись outbox не создаётся
-  api --> user : 202, тот же commandId
+  api --> user : 200, тот же commandId
 else Ключ уже есть с другим payloadHash
   db --> api : Конфликт ключа
   api --> user : 409

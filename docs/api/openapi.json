@@ -1,0 +1,2702 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Тёплый дом — To-Be REST API",
+    "version": "1.0.0",
+    "description": "Проектный контракт пяти HTTP-операций для Java 21 / Spring Framework. Доменный CRUD домов, каталога и сценариев, внутренний endpoint проверки прав и видео API не входят в выбранный срез. Адрес .example иллюстративный; backend здесь не реализуется. JSON — camelCase, UUID, RFC 3339; ошибки application/problem+json (RFC 9457). Все ответы содержат X-Request-Id и Cache-Control: no-store. 404 скрывает отсутствие прав на конкретный ресурс; 403 означает отсутствие общего разрешения. Идемпотентность POST команд обеспечивается локальной уникальностью и outbox, а не гарантиями транспорта."
+  },
+  "servers": [
+    {
+      "url": "https://api.warmhouse.example/api/v1",
+      "description": "Целевой адрес; пример для проектирования, не действующее API"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Устройства и модули"
+    },
+    {
+      "name": "Отопление, освещение и ворота"
+    },
+    {
+      "name": "Телеметрия"
+    }
+  ],
+  "security": [
+    {
+      "UserBearer": []
+    }
+  ],
+  "paths": {
+    "/houses/{houseId}/device-claims": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/HouseId"
+        }
+      ],
+      "post": {
+        "operationId": "claimDevice",
+        "tags": [
+          "Устройства и модули"
+        ],
+        "summary": "Подключить устройство к модулю дома",
+        "security": [
+          {
+            "UserBearer": []
+          }
+        ],
+        "description": "Только владелец дома с devices.claim. Сопоставляет deviceId и нормализованный serialNumber из QR с реестром; проверяет moduleId, код и состав комплекта. Транзакционно создаёт PENDING-привязку и DeviceClaim + outbox, затем 202. Физическая проверка идёт асинхронно. POST не обещает идемпотентность: при потерянном ответе сначала прочитайте профиль известного из QR deviceId; не отправляйте код автоматически повторно. При отказе/истечении статус claim виден в профиле выбранной bindingVersion. Отправка команды до ACTIVE запрещена.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimRequest"
+              },
+              "examples": {
+                "connectHeatingKit": {
+                  "summary": "QR-комплект отопления",
+                  "value": {
+                    "moduleId": "10000000-0000-4000-8000-000000000002",
+                    "deviceId": "10000000-0000-4000-8000-000000000003",
+                    "serialNumber": "partner-a:WH-000103",
+                    "claimCode": "demo-claim-code-123456"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Подключение принято, владение оборудованием ещё проверяется.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "Link": {
+                "$ref": "#/components/headers/MonitorLink"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimReceipt"
+                },
+                "examples": {
+                  "pending": {
+                    "summary": "",
+                    "value": {
+                      "claimId": "10000000-0000-4000-8000-000000000005",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "moduleId": "10000000-0000-4000-8000-000000000002",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "status": "PENDING",
+                      "expiresAt": "2026-11-08T12:03:00Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/devices/10000000-0000-4000-8000-000000000003?bindingVersion=4"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/houses/{houseId}/devices/{deviceId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/HouseId"
+        },
+        {
+          "$ref": "#/components/parameters/DeviceId"
+        }
+      ],
+      "get": {
+        "operationId": "getDeviceProfile",
+        "tags": [
+          "Устройства и модули"
+        ],
+        "summary": "Получить профиль и статус подключения устройства",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "ServiceBearer": [],
+            "ServiceMTLS": []
+          }
+        ],
+        "description": "UserBearer: проверка владельца дома и devices.read. ServiceBearer+mTLS: devices.read.system и разрешённый client_id integration/heating/lighting/gates/automation; возвращается только указанная серверная привязка без секретов. Отсутствие bindingVersion означает последнюю попытку для этого дома; конкретная версия позволяет мониторить claim независимо от новых попыток. Иная/отсутствующая принадлежность дому → 404. Вызов не опрашивает прибор. claim.status — исход попытки, binding.status — жизненный цикл привязки: после позднейшего отзыва успешный claim может остаться ACTIVE. Для команды нужны одновременно isCurrent=true, binding.status=ACTIVE и соответствующая capability.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BindingVersionOptional"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Профиль и попытка подключения в указанном доме.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceProfile"
+                },
+                "examples": {
+                  "active": {
+                    "summary": "",
+                    "value": {
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "serialNumber": "partner-a:WH-000103",
+                      "deviceType": {
+                        "id": "10000000-0000-4000-8000-000000000004",
+                        "code": "heating-controller",
+                        "version": 2,
+                        "protocolProfile": "partner-a-mqtt-v1",
+                        "capabilities": [
+                          "heating.setEnabled",
+                          "telemetry.temperature"
+                        ]
+                      },
+                      "binding": {
+                        "houseId": "10000000-0000-4000-8000-000000000001",
+                        "moduleId": "10000000-0000-4000-8000-000000000002",
+                        "bindingVersion": 4,
+                        "status": "ACTIVE",
+                        "isCurrent": true
+                      },
+                      "claim": {
+                        "claimId": "10000000-0000-4000-8000-000000000005",
+                        "status": "ACTIVE",
+                        "createdAt": "2026-11-08T11:58:00Z",
+                        "expiresAt": "2026-11-08T12:03:00Z",
+                        "completedAt": "2026-11-08T11:58:05Z",
+                        "failureCode": null
+                      }
+                    }
+                  },
+                  "pending": {
+                    "summary": "",
+                    "value": {
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "serialNumber": "partner-a:WH-000103",
+                      "deviceType": {
+                        "id": "10000000-0000-4000-8000-000000000004",
+                        "code": "heating-controller",
+                        "version": 2,
+                        "protocolProfile": "partner-a-mqtt-v1",
+                        "capabilities": [
+                          "heating.setEnabled",
+                          "telemetry.temperature"
+                        ]
+                      },
+                      "binding": {
+                        "houseId": "10000000-0000-4000-8000-000000000001",
+                        "moduleId": "10000000-0000-4000-8000-000000000002",
+                        "bindingVersion": 4,
+                        "status": "PENDING",
+                        "isCurrent": true
+                      },
+                      "claim": {
+                        "claimId": "10000000-0000-4000-8000-000000000005",
+                        "status": "PENDING",
+                        "createdAt": "2026-11-08T11:58:00Z",
+                        "expiresAt": "2026-11-08T12:03:00Z",
+                        "completedAt": null,
+                        "failureCode": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/houses/{houseId}/{domain}/devices/{deviceId}/commands": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/HouseId"
+        },
+        {
+          "$ref": "#/components/parameters/Domain"
+        },
+        {
+          "$ref": "#/components/parameters/DeviceId"
+        }
+      ],
+      "post": {
+        "operationId": "submitDeviceCommand",
+        "tags": [
+          "Отопление, освещение и ворота"
+        ],
+        "summary": "Принять команду изменения состояния",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "ServiceBearer": [],
+            "ServiceMTLS": []
+          }
+        ],
+        "description": "UserBearer: commands.write и владение домом. Автоматизация: client_id=automation, ServiceBearer+mTLS, commands.execute-as-owner и X-Owner-Subject из ScenarioRun; сервис снова проверяет владельца. Сначала доступ и поиск Idempotency-Key; прежний ключ с тем же нормализованным запросом возвращает 200 и прежний commandId, даже если TTL уже истёк. Другой запрос с этим ключом → 409. Для новой команды проверяются текущая ACTIVE-привязка, bindingVersion, capability, domain/action и допустимый переход. Запись Command и outbox атомарна. 202 означает ACCEPTED, а не исполнение. expiresAt вычисляется сервером один раз из ttlSeconds (default=30, 1..120). Ключ не продлевает deadline. Сбой ответа после commit не исключает принятия: повторите с тем же ключом. Нельзя отправлять toggle или открывать ворота новым commandId после UNKNOWN без решения пользователя.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/OwnerSubject"
+          }
+        ],
+        "x-domain-actions": {
+          "heating": [
+            "heating.setEnabled"
+          ],
+          "lighting": [
+            "lighting.setEnabled"
+          ],
+          "gates": [
+            "gates.setPosition",
+            "gates.setLock"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandRequest"
+              },
+              "examples": {
+                "enableHeating": {
+                  "summary": "enableHeating",
+                  "value": {
+                    "bindingVersion": 4,
+                    "action": "heating.setEnabled",
+                    "payload": {
+                      "enabled": true
+                    },
+                    "ttlSeconds": 30
+                  },
+                  "x-path-parameters": {
+                    "houseId": "10000000-0000-4000-8000-000000000001",
+                    "domain": "heating",
+                    "deviceId": "10000000-0000-4000-8000-000000000003"
+                  }
+                },
+                "disableHeating": {
+                  "summary": "disableHeating",
+                  "value": {
+                    "bindingVersion": 4,
+                    "action": "heating.setEnabled",
+                    "payload": {
+                      "enabled": false
+                    },
+                    "ttlSeconds": 30
+                  },
+                  "x-path-parameters": {
+                    "houseId": "10000000-0000-4000-8000-000000000001",
+                    "domain": "heating",
+                    "deviceId": "10000000-0000-4000-8000-000000000003"
+                  }
+                },
+                "enableLight": {
+                  "summary": "enableLight",
+                  "value": {
+                    "bindingVersion": 2,
+                    "action": "lighting.setEnabled",
+                    "payload": {
+                      "enabled": true
+                    },
+                    "ttlSeconds": 30
+                  },
+                  "x-path-parameters": {
+                    "houseId": "10000000-0000-4000-8000-000000000001",
+                    "domain": "lighting",
+                    "deviceId": "10000000-0000-4000-8000-000000000030"
+                  }
+                },
+                "closeGate": {
+                  "summary": "closeGate",
+                  "value": {
+                    "bindingVersion": 3,
+                    "action": "gates.setPosition",
+                    "payload": {
+                      "position": "CLOSED"
+                    },
+                    "ttlSeconds": 60
+                  },
+                  "x-path-parameters": {
+                    "houseId": "10000000-0000-4000-8000-000000000001",
+                    "domain": "gates",
+                    "deviceId": "10000000-0000-4000-8000-000000000031"
+                  }
+                },
+                "lockGate": {
+                  "summary": "lockGate",
+                  "value": {
+                    "bindingVersion": 3,
+                    "action": "gates.setLock",
+                    "payload": {
+                      "lock": "LOCKED"
+                    },
+                    "ttlSeconds": 30
+                  },
+                  "x-path-parameters": {
+                    "houseId": "10000000-0000-4000-8000-000000000001",
+                    "domain": "gates",
+                    "deviceId": "10000000-0000-4000-8000-000000000031"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Новая команда сохранена и принята для доставки.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "Location": {
+                "$ref": "#/components/headers/CommandLocation"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResource"
+                },
+                "examples": {
+                  "accepted": {
+                    "summary": "",
+                    "value": {
+                      "commandId": "10000000-0000-4000-8000-000000000006",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "domain": "heating",
+                      "action": "heating.setEnabled",
+                      "payload": {
+                        "enabled": true
+                      },
+                      "createdAt": "2026-11-08T12:00:00Z",
+                      "expiresAt": "2026-11-08T12:00:30Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006",
+                      "status": "ACCEPTED",
+                      "completedAt": null,
+                      "result": null,
+                      "failure": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Идемпотентный повтор; возвращена прежняя команда с её текущим статусом.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "Location": {
+                "$ref": "#/components/headers/CommandLocation"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResource"
+                },
+                "examples": {
+                  "replayAccepted": {
+                    "summary": "",
+                    "value": {
+                      "commandId": "10000000-0000-4000-8000-000000000006",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "domain": "heating",
+                      "action": "heating.setEnabled",
+                      "payload": {
+                        "enabled": true
+                      },
+                      "createdAt": "2026-11-08T12:00:00Z",
+                      "expiresAt": "2026-11-08T12:00:30Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006",
+                      "status": "ACCEPTED",
+                      "completedAt": null,
+                      "result": null,
+                      "failure": null
+                    }
+                  },
+                  "replaySucceeded": {
+                    "summary": "",
+                    "value": {
+                      "commandId": "10000000-0000-4000-8000-000000000006",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "domain": "heating",
+                      "action": "heating.setEnabled",
+                      "payload": {
+                        "enabled": true
+                      },
+                      "createdAt": "2026-11-08T12:00:00Z",
+                      "expiresAt": "2026-11-08T12:00:30Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006",
+                      "status": "SUCCEEDED",
+                      "completedAt": "2026-11-08T12:00:02Z",
+                      "result": {
+                        "confirmedState": {
+                          "enabled": true
+                        },
+                        "sequence": 42,
+                        "observedAt": "2026-11-08T12:00:01Z"
+                      },
+                      "failure": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/houses/{houseId}/{domain}/commands/{commandId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/HouseId"
+        },
+        {
+          "$ref": "#/components/parameters/Domain"
+        },
+        {
+          "$ref": "#/components/parameters/CommandId"
+        }
+      ],
+      "get": {
+        "operationId": "getCommandStatus",
+        "tags": [
+          "Отопление, освещение и ворота"
+        ],
+        "summary": "Прочитать результат команды",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "ServiceBearer": [],
+            "ServiceMTLS": []
+          }
+        ],
+        "description": "commands.read и доступ к дому. Для automation с ServiceBearer+mTLS обязателен X-Owner-Subject; режим делегирования и владелец проверяются заново. Gateway использует domain для выбора единственного владельца команды; чужой дом или неверный domain → 404. Только ACK физического исполнения даёт SUCCEEDED. FAILED — явный отказ; EXPIRED — подтверждённо не отправлена до deadline; UNKNOWN — нет подтверждения и нельзя утверждать неисполнение. Поздний ACK может уточнить UNKNOWN, при этом старый sequence не откатывает подтверждённое состояние. Чтение не создаёт команд и не продлевает TTL.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OwnerSubject"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Текущее состояние одной команды.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResource"
+                },
+                "examples": {
+                  "accepted": {
+                    "summary": "",
+                    "value": {
+                      "commandId": "10000000-0000-4000-8000-000000000006",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "domain": "heating",
+                      "action": "heating.setEnabled",
+                      "payload": {
+                        "enabled": true
+                      },
+                      "createdAt": "2026-11-08T12:00:00Z",
+                      "expiresAt": "2026-11-08T12:00:30Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006",
+                      "status": "ACCEPTED",
+                      "completedAt": null,
+                      "result": null,
+                      "failure": null
+                    }
+                  },
+                  "succeeded": {
+                    "summary": "",
+                    "value": {
+                      "commandId": "10000000-0000-4000-8000-000000000006",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "domain": "heating",
+                      "action": "heating.setEnabled",
+                      "payload": {
+                        "enabled": true
+                      },
+                      "createdAt": "2026-11-08T12:00:00Z",
+                      "expiresAt": "2026-11-08T12:00:30Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006",
+                      "status": "SUCCEEDED",
+                      "completedAt": "2026-11-08T12:00:02Z",
+                      "result": {
+                        "confirmedState": {
+                          "enabled": true
+                        },
+                        "sequence": 42,
+                        "observedAt": "2026-11-08T12:00:01Z"
+                      },
+                      "failure": null
+                    }
+                  },
+                  "unknown": {
+                    "summary": "",
+                    "value": {
+                      "commandId": "10000000-0000-4000-8000-000000000006",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "domain": "heating",
+                      "action": "heating.setEnabled",
+                      "payload": {
+                        "enabled": true
+                      },
+                      "createdAt": "2026-11-08T12:00:00Z",
+                      "expiresAt": "2026-11-08T12:00:30Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006",
+                      "status": "UNKNOWN",
+                      "completedAt": null,
+                      "result": null,
+                      "failure": {
+                        "code": "ACK_TIMEOUT",
+                        "message": "Исполнение не подтверждено. Не создавайте новую команду автоматически."
+                      }
+                    }
+                  },
+                  "expired": {
+                    "summary": "",
+                    "value": {
+                      "commandId": "10000000-0000-4000-8000-000000000006",
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "domain": "heating",
+                      "action": "heating.setEnabled",
+                      "payload": {
+                        "enabled": true
+                      },
+                      "createdAt": "2026-11-08T12:00:00Z",
+                      "expiresAt": "2026-11-08T12:00:30Z",
+                      "statusUrl": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006",
+                      "status": "EXPIRED",
+                      "completedAt": "2026-11-08T12:00:30Z",
+                      "result": null,
+                      "failure": {
+                        "code": "DEADLINE_BEFORE_SEND",
+                        "message": "До отправки устройству истёк срок действия команды."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/houses/{houseId}/devices/{deviceId}/telemetry": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/HouseId"
+        },
+        {
+          "$ref": "#/components/parameters/DeviceId"
+        }
+      ],
+      "get": {
+        "operationId": "getDeviceTelemetry",
+        "tags": [
+          "Телеметрия"
+        ],
+        "summary": "Получить последнее показание или историю метрики",
+        "security": [
+          {
+            "UserBearer": []
+          },
+          {
+            "ServiceBearer": [],
+            "ServiceMTLS": []
+          }
+        ],
+        "description": "UserBearer: telemetry.read и владение домом. automation с ServiceBearer+mTLS использует telemetry.read, execute-as-owner и X-Owner-Subject; права владельца проверяются заново. Выборка всегда ограничена (houseId, deviceId, bindingVersion, metric). Старые измерения остаются в доме прежней привязки. mode=latest: 0..1 элемент, from/to/limit/cursor запрещены. mode=history: обязательны from и to, интервал [from,to) до 31 суток, limit=1..500 (default=100). Порядок (observedAt, measurementId) ASC, cursor закрепляет фильтры и последнюю пару ключей; при пагинации фильтры повторяются. Свежесть: ageSeconds=max(0,floor(asOf-observedAt)), stale=(ageSeconds > freshnessThresholdSeconds); quality не заменяет stale. Неподдерживаемая метрика → 422; отсутствие данных → 200 с items=[]. Чтение обращается к telemetry_db, не к устройству.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/BindingVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Metric"
+          },
+          {
+            "$ref": "#/components/parameters/Mode"
+          },
+          {
+            "$ref": "#/components/parameters/From"
+          },
+          {
+            "$ref": "#/components/parameters/To"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/OwnerSubject"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Показания и метаданные свежести.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryPage"
+                },
+                "examples": {
+                  "latest": {
+                    "summary": "",
+                    "value": {
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "metric": "temperature",
+                      "mode": "latest",
+                      "asOf": "2026-11-08T12:00:05Z",
+                      "freshnessThresholdSeconds": 60,
+                      "items": [
+                        {
+                          "measurementId": "10000000-0000-4000-8000-000000000020",
+                          "sourceMessageId": "10000000-0000-4000-8000-000000000021",
+                          "deviceId": "10000000-0000-4000-8000-000000000003",
+                          "houseId": "10000000-0000-4000-8000-000000000001",
+                          "bindingVersion": 4,
+                          "metric": "temperature",
+                          "value": 23.5,
+                          "unit": "Cel",
+                          "quality": "GOOD",
+                          "sequence": 43,
+                          "observedAt": "2026-11-08T12:00:00Z",
+                          "receivedAt": "2026-11-08T12:00:01Z",
+                          "ageSeconds": 5,
+                          "stale": false
+                        }
+                      ],
+                      "nextCursor": null
+                    }
+                  },
+                  "stale": {
+                    "summary": "",
+                    "value": {
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "metric": "temperature",
+                      "mode": "latest",
+                      "asOf": "2026-11-08T12:00:05Z",
+                      "freshnessThresholdSeconds": 60,
+                      "items": [
+                        {
+                          "measurementId": "10000000-0000-4000-8000-000000000020",
+                          "sourceMessageId": "10000000-0000-4000-8000-000000000021",
+                          "deviceId": "10000000-0000-4000-8000-000000000003",
+                          "houseId": "10000000-0000-4000-8000-000000000001",
+                          "bindingVersion": 4,
+                          "metric": "temperature",
+                          "value": 23.5,
+                          "unit": "Cel",
+                          "quality": "GOOD",
+                          "sequence": 43,
+                          "observedAt": "2026-11-08T11:55:00Z",
+                          "receivedAt": "2026-11-08T11:55:01Z",
+                          "ageSeconds": 305,
+                          "stale": true
+                        }
+                      ],
+                      "nextCursor": null
+                    }
+                  },
+                  "history": {
+                    "summary": "",
+                    "value": {
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "metric": "temperature",
+                      "mode": "history",
+                      "asOf": "2026-11-08T12:00:05Z",
+                      "freshnessThresholdSeconds": 60,
+                      "items": [
+                        {
+                          "measurementId": "10000000-0000-4000-8000-000000000020",
+                          "sourceMessageId": "10000000-0000-4000-8000-000000000021",
+                          "deviceId": "10000000-0000-4000-8000-000000000003",
+                          "houseId": "10000000-0000-4000-8000-000000000001",
+                          "bindingVersion": 4,
+                          "metric": "temperature",
+                          "value": 23.5,
+                          "unit": "Cel",
+                          "quality": "GOOD",
+                          "sequence": 43,
+                          "observedAt": "2026-11-08T12:00:00Z",
+                          "receivedAt": "2026-11-08T12:00:01Z",
+                          "ageSeconds": 5,
+                          "stale": false
+                        }
+                      ],
+                      "nextCursor": "eyJ2IjoxLCJsYXN0IjoyMH0_demo_signature"
+                    }
+                  },
+                  "noData": {
+                    "summary": "",
+                    "value": {
+                      "houseId": "10000000-0000-4000-8000-000000000001",
+                      "deviceId": "10000000-0000-4000-8000-000000000003",
+                      "bindingVersion": 4,
+                      "metric": "temperature",
+                      "mode": "latest",
+                      "asOf": "2026-11-08T12:00:05Z",
+                      "freshnessThresholdSeconds": 60,
+                      "items": [],
+                      "nextCursor": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Uuid": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "description": "RFC 3339. В ответах время нормализуется в UTC."
+      },
+      "Domain": {
+        "type": "string",
+        "enum": [
+          "heating",
+          "lighting",
+          "gates"
+        ]
+      },
+      "BindingVersion": {
+        "type": "integer",
+        "minimum": 1,
+        "format": "int64"
+      },
+      "Metric": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.]{0,63}$"
+      },
+      "CommandFailure": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": true
+      },
+      "EnabledState": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": true
+      },
+      "GateState": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "CLOSED",
+              "OPENING",
+              "CLOSING",
+              "UNKNOWN"
+            ]
+          },
+          "lock": {
+            "type": "string",
+            "enum": [
+              "LOCKED",
+              "UNLOCKED",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "position",
+          "lock"
+        ],
+        "additionalProperties": true
+      },
+      "CommandExecutionResult": {
+        "type": "object",
+        "properties": {
+          "confirmedState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EnabledState"
+              },
+              {
+                "$ref": "#/components/schemas/GateState"
+              }
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "format": "int64"
+          },
+          "observedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "confirmedState",
+          "sequence",
+          "observedAt"
+        ],
+        "additionalProperties": true
+      },
+      "CommandOutcome": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACCEPTED",
+              "SUCCEEDED",
+              "FAILED",
+              "EXPIRED",
+              "UNKNOWN"
+            ]
+          },
+          "completedAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommandExecutionResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommandFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "completedAt",
+          "result",
+          "failure"
+        ],
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ACCEPTED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "type": "null"
+                },
+                "result": {
+                  "type": "null"
+                },
+                "failure": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "SUCCEEDED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/CommandExecutionResult"
+                },
+                "failure": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "FAILED",
+                    "EXPIRED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "result": {
+                  "type": "null"
+                },
+                "failure": {
+                  "$ref": "#/components/schemas/CommandFailure"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "EXPIRED"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "failure": {
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "DEADLINE_BEFORE_SEND"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "UNKNOWN"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "completedAt": {
+                  "type": "null"
+                },
+                "result": {
+                  "type": "null"
+                },
+                "failure": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/CommandFailure"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "ACK_TIMEOUT"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ClaimRequest": {
+        "type": "object",
+        "properties": {
+          "moduleId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "serialNumber": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,31}:[A-Za-z0-9._-]{1,64}$",
+            "description": "Нормализованный номер партнёр:серийный-номер из QR-комплекта."
+          },
+          "claimCode": {
+            "type": "string",
+            "minLength": 16,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "writeOnly": true,
+            "description": "Одноразовое доказательство владения из комплекта. Не возвращается и не журналируется."
+          }
+        },
+        "required": [
+          "moduleId",
+          "deviceId",
+          "serialNumber",
+          "claimCode"
+        ],
+        "additionalProperties": false
+      },
+      "ClaimSummary": {
+        "type": "object",
+        "properties": {
+          "claimId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "ACTIVE",
+              "FAILED",
+              "EXPIRED"
+            ]
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "completedAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failureCode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "claimId",
+          "status",
+          "createdAt",
+          "expiresAt",
+          "completedAt",
+          "failureCode"
+        ],
+        "additionalProperties": true
+      },
+      "ClaimReceipt": {
+        "type": "object",
+        "properties": {
+          "claimId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "moduleId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING"
+            ]
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "statusUrl": {
+            "type": "string",
+            "format": "uri-reference",
+            "pattern": "^/api/v1/houses/"
+          }
+        },
+        "required": [
+          "claimId",
+          "houseId",
+          "moduleId",
+          "deviceId",
+          "bindingVersion",
+          "status",
+          "expiresAt",
+          "statusUrl"
+        ],
+        "additionalProperties": true
+      },
+      "DeviceTypeView": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "protocolProfile": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "capabilities": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "version",
+          "protocolProfile",
+          "capabilities"
+        ],
+        "additionalProperties": true
+      },
+      "DeviceBindingView": {
+        "type": "object",
+        "properties": {
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "moduleId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "ACTIVE",
+              "REVOKED"
+            ]
+          },
+          "isCurrent": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "houseId",
+          "moduleId",
+          "bindingVersion",
+          "status",
+          "isCurrent"
+        ],
+        "additionalProperties": true
+      },
+      "DeviceProfile": {
+        "type": "object",
+        "properties": {
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "serialNumber": {
+            "type": "string"
+          },
+          "deviceType": {
+            "$ref": "#/components/schemas/DeviceTypeView"
+          },
+          "binding": {
+            "$ref": "#/components/schemas/DeviceBindingView"
+          },
+          "claim": {
+            "$ref": "#/components/schemas/ClaimSummary"
+          }
+        },
+        "required": [
+          "deviceId",
+          "serialNumber",
+          "deviceType",
+          "binding",
+          "claim"
+        ],
+        "additionalProperties": true
+      },
+      "HeatingEnabledRequest": {
+        "type": "object",
+        "properties": {
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "heating.setEnabled"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "default": 30,
+            "description": "Сервер вычисляет expiresAt один раз; повтор ключа не продлевает TTL."
+          }
+        },
+        "required": [
+          "bindingVersion",
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "heating.setEnabled"
+      },
+      "LightEnabledRequest": {
+        "type": "object",
+        "properties": {
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "lighting.setEnabled"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "default": 30,
+            "description": "Сервер вычисляет expiresAt один раз; повтор ключа не продлевает TTL."
+          }
+        },
+        "required": [
+          "bindingVersion",
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "lighting.setEnabled"
+      },
+      "GatePositionRequest": {
+        "type": "object",
+        "properties": {
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "gates.setPosition"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "position": {
+                "type": "string",
+                "enum": [
+                  "OPEN",
+                  "CLOSED"
+                ]
+              }
+            },
+            "required": [
+              "position"
+            ],
+            "additionalProperties": false
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "default": 30,
+            "description": "Сервер вычисляет expiresAt один раз; повтор ключа не продлевает TTL."
+          }
+        },
+        "required": [
+          "bindingVersion",
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "gates.setPosition"
+      },
+      "GateLockRequest": {
+        "type": "object",
+        "properties": {
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "gates.setLock"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "lock": {
+                "type": "string",
+                "enum": [
+                  "LOCKED",
+                  "UNLOCKED"
+                ]
+              }
+            },
+            "required": [
+              "lock"
+            ],
+            "additionalProperties": false
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "default": 30,
+            "description": "Сервер вычисляет expiresAt один раз; повтор ключа не продлевает TTL."
+          }
+        },
+        "required": [
+          "bindingVersion",
+          "action",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "title": "gates.setLock"
+      },
+      "CommandRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HeatingEnabledRequest"
+          },
+          {
+            "$ref": "#/components/schemas/LightEnabledRequest"
+          },
+          {
+            "$ref": "#/components/schemas/GatePositionRequest"
+          },
+          {
+            "$ref": "#/components/schemas/GateLockRequest"
+          }
+        ]
+      },
+      "CommandIdentity": {
+        "type": "object",
+        "properties": {
+          "commandId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "domain": {
+            "$ref": "#/components/schemas/Domain"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "heating.setEnabled",
+              "lighting.setEnabled",
+              "gates.setPosition",
+              "gates.setLock"
+            ]
+          },
+          "payload": {
+            "type": "object"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "statusUrl": {
+            "type": "string",
+            "format": "uri-reference",
+            "pattern": "^/api/v1/houses/"
+          }
+        },
+        "required": [
+          "commandId",
+          "houseId",
+          "deviceId",
+          "bindingVersion",
+          "domain",
+          "action",
+          "payload",
+          "createdAt",
+          "expiresAt",
+          "statusUrl"
+        ],
+        "additionalProperties": true
+      },
+      "CommandResource": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CommandIdentity"
+          },
+          {
+            "$ref": "#/components/schemas/CommandOutcome"
+          },
+          {
+            "if": {
+              "properties": {
+                "domain": {
+                  "type": "string",
+                  "enum": [
+                    "gates"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "result": {
+                  "properties": {
+                    "confirmedState": {
+                      "$ref": "#/components/schemas/GateState"
+                    }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "result": {
+                  "properties": {
+                    "confirmedState": {
+                      "$ref": "#/components/schemas/EnabledState"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "MetricValue": {
+        "oneOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string",
+            "maxLength": 4096
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "object",
+            "maxProperties": 64
+          },
+          {
+            "type": "array",
+            "maxItems": 128
+          }
+        ],
+        "description": "Тип и единица дополнительно проверяются по telemetry_schema DeviceType, а не только этой общей схеме."
+      },
+      "Measurement": {
+        "type": "object",
+        "properties": {
+          "measurementId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "sourceMessageId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/Metric"
+          },
+          "value": {
+            "$ref": "#/components/schemas/MetricValue"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "GOOD",
+              "UNCERTAIN"
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "format": "int64"
+          },
+          "observedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "receivedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "measurementId",
+          "sourceMessageId",
+          "deviceId",
+          "houseId",
+          "bindingVersion",
+          "metric",
+          "value",
+          "unit",
+          "quality",
+          "sequence",
+          "observedAt",
+          "receivedAt"
+        ],
+        "additionalProperties": true
+      },
+      "MeasurementView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Measurement"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ageSeconds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "stale": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ageSeconds",
+              "stale"
+            ],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "TelemetryPage": {
+        "type": "object",
+        "properties": {
+          "houseId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "deviceId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "bindingVersion": {
+            "$ref": "#/components/schemas/BindingVersion"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/Metric"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "latest",
+              "history"
+            ]
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "freshnessThresholdSeconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/components/schemas/MeasurementView"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "houseId",
+          "deviceId",
+          "bindingVersion",
+          "metric",
+          "mode",
+          "asOf",
+          "freshnessThresholdSeconds",
+          "items",
+          "nextCursor"
+        ],
+        "additionalProperties": true,
+        "description": "latest: 0..1 элемент; history: стабильный порядок (observedAt, measurementId) ASC. Пустой массив — данных в выбранной привязке/интервале нет.",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "latest"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "items": {
+                  "maxItems": 1
+                },
+                "nextCursor": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Problem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "format": "uri-reference"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field",
+                "message"
+              ],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "instance",
+          "code",
+          "requestId"
+        ],
+        "additionalProperties": true,
+        "description": "RFC 9457; поле code предназначено для клиентов, detail — для человека. Секреты и стеки вызовов не включаются."
+      }
+    },
+    "parameters": {
+      "HouseId": {
+        "name": "houseId",
+        "in": "path",
+        "required": true,
+        "description": "Дом, доступ к которому проверяется перед любой операцией.",
+        "schema": {
+          "$ref": "#/components/schemas/Uuid"
+        },
+        "examples": {
+          "home": {
+            "summary": "",
+            "value": "10000000-0000-4000-8000-000000000001"
+          }
+        }
+      },
+      "DeviceId": {
+        "name": "deviceId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Uuid"
+        },
+        "examples": {
+          "controller": {
+            "summary": "",
+            "value": "10000000-0000-4000-8000-000000000003"
+          }
+        }
+      },
+      "CommandId": {
+        "name": "commandId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Uuid"
+        },
+        "examples": {
+          "command": {
+            "summary": "",
+            "value": "10000000-0000-4000-8000-000000000006"
+          }
+        }
+      },
+      "Domain": {
+        "name": "domain",
+        "in": "path",
+        "required": true,
+        "description": "Владелец команды и её БД: heating, lighting либо gates. Gateway маршрутизирует к соответствующему сервису.",
+        "schema": {
+          "$ref": "#/components/schemas/Domain"
+        },
+        "examples": {
+          "heating": {
+            "summary": "",
+            "value": "heating"
+          },
+          "lighting": {
+            "summary": "",
+            "value": "lighting"
+          },
+          "gates": {
+            "summary": "",
+            "value": "gates"
+          }
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "1..128 ASCII-символов. Стабилен при retry. Область: сервис (domain), дом и нормализованный principal. Hash включает deviceId, bindingVersion, action, payload и нормализованный ttlSeconds.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "examples": {
+          "manual": {
+            "summary": "",
+            "value": "manual-heating-001"
+          },
+          "scenario": {
+            "summary": "",
+            "value": "run-100-action-0"
+          }
+        }
+      },
+      "OwnerSubject": {
+        "name": "X-Owner-Subject",
+        "in": "header",
+        "required": false,
+        "description": "Только для client_id=automation с ServiceBearer, соответствующим mTLS-сертификатом и разрешением execute-as-owner. Тогда обязателен: значение берётся из сохранённого ScenarioRun; целевой сервис заново проверяет владение домом. UserBearer с этим заголовком получает 403. Произвольный заголовок без этой аутентификации не делегирует права.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "examples": {
+          "owner": {
+            "summary": "",
+            "value": "user-42"
+          }
+        }
+      },
+      "BindingVersionOptional": {
+        "name": "bindingVersion",
+        "in": "query",
+        "required": false,
+        "description": "Версия подключения для устойчивого мониторинга claim или чтения истории. Если опущена, возвращается последняя версия для указанного дома.",
+        "schema": {
+          "$ref": "#/components/schemas/BindingVersion"
+        },
+        "examples": {
+          "current": {
+            "summary": "",
+            "value": 4
+          }
+        }
+      },
+      "BindingVersion": {
+        "name": "bindingVersion",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/BindingVersion"
+        },
+        "examples": {
+          "current": {
+            "summary": "",
+            "value": 4
+          }
+        }
+      },
+      "Metric": {
+        "name": "metric",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Metric"
+        },
+        "examples": {
+          "temperature": {
+            "summary": "",
+            "value": "temperature"
+          }
+        }
+      },
+      "Mode": {
+        "name": "mode",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "latest",
+            "history"
+          ],
+          "default": "latest"
+        },
+        "examples": {
+          "latest": {
+            "summary": "",
+            "value": "latest"
+          },
+          "history": {
+            "summary": "",
+            "value": "history"
+          }
+        }
+      },
+      "From": {
+        "name": "from",
+        "in": "query",
+        "required": false,
+        "description": "Обязателен только в history; включительная нижняя граница. В latest запрещён.",
+        "schema": {
+          "$ref": "#/components/schemas/Timestamp"
+        },
+        "examples": {
+          "start": {
+            "summary": "",
+            "value": "2026-11-08T11:00:00Z"
+          }
+        }
+      },
+      "To": {
+        "name": "to",
+        "in": "query",
+        "required": false,
+        "description": "Обязателен только в history; исключительная верхняя граница. from < to, интервал не более 31 суток. В latest запрещён.",
+        "schema": {
+          "$ref": "#/components/schemas/Timestamp"
+        },
+        "examples": {
+          "end": {
+            "summary": "",
+            "value": "2026-11-08T12:01:00Z"
+          }
+        }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "description": "Только history. В latest запрещён.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 100
+        },
+        "examples": {
+          "page": {
+            "summary": "",
+            "value": 100
+          }
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "description": "Только history. Непрозрачен; подписан сервером и привязан ко всем фильтрам, включая дом, устройство, версию, метрику и интервал. Изменённый/истёкший cursor → 400.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "examples": {
+          "next": {
+            "summary": "",
+            "value": "eyJ2IjoxLCJsYXN0IjoyMH0_demo_signature"
+          }
+        }
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Идентификатор запроса для сопоставления с журналами.",
+        "schema": {
+          "$ref": "#/components/schemas/Uuid"
+        },
+        "example": "10000000-0000-4000-8000-000000000007"
+      },
+      "NoStore": {
+        "description": "Ответ не кэшируется публичными посредниками.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "no-store"
+          ]
+        },
+        "example": "no-store"
+      },
+      "RetryAfter": {
+        "description": "Рекомендуемая задержка повторного чтения/запроса, секунды.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "example": 1
+      },
+      "MonitorLink": {
+        "description": "URI мониторинга состояния, rel=monitor.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "</api/v1/houses/10000000-0000-4000-8000-000000000001/devices/10000000-0000-4000-8000-000000000003?bindingVersion=4>; rel=\"monitor\""
+      },
+      "CommandLocation": {
+        "description": "URI проверки команды в том же domain.",
+        "schema": {
+          "type": "string",
+          "format": "uri-reference"
+        },
+        "example": "/api/v1/houses/10000000-0000-4000-8000-000000000001/heating/commands/10000000-0000-4000-8000-000000000006"
+      },
+      "Authenticate": {
+        "schema": {
+          "type": "string"
+        },
+        "example": "Bearer realm=\"warmhouse\""
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Некорректны path/query/заголовок, JSON-синтаксис или комбинация фильтров.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/invalid-request",
+                  "title": "BadRequest",
+                  "status": 400,
+                  "detail": "Некорректны path/query/заголовок, JSON-синтаксис или комбинация фильтров.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "INVALID_REQUEST",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "JWT отсутствует, недействителен, истёк либо не подходит issuer/audience; сертификат сервиса не прошёл проверку.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "WWW-Authenticate": {
+            "$ref": "#/components/headers/Authenticate"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/unauthenticated",
+                  "title": "Unauthenticated",
+                  "status": 401,
+                  "detail": "JWT отсутствует, недействителен, истёк либо не подходит issuer/audience; сертификат сервиса не прошёл проверку.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "UNAUTHENTICATED",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Нет разрешения на операцию либо недопустим режим делегирования. Не раскрывает принадлежность чужих ресурсов.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/insufficient-scope",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Нет разрешения на операцию либо недопустим режим делегирования. Не раскрывает принадлежность чужих ресурсов.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "INSUFFICIENT_SCOPE",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Дом, устройство, привязка или команда не найдены либо недоступны этому владельцу.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/not-found",
+                  "title": "NotFound",
+                  "status": 404,
+                  "detail": "Дом, устройство, привязка или команда не найдены либо недоступны этому владельцу.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "NOT_FOUND",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Конфликт состояния: привязка устарела/не ACTIVE, устройство занято, нет места в модуле либо ключ идемпотентности использован для другого запроса.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/binding-version-mismatch",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "Конфликт состояния: привязка устарела/не ACTIVE, устройство занято, нет места в модуле либо ключ идемпотентности использован для другого запроса.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "BINDING_VERSION_MISMATCH",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              },
+              "idempotencyConflict": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/idempotency-conflict",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "Прежний Idempotency-Key относится к другому payload или deviceId.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "IDEMPOTENCY_CONFLICT",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "Для POST требуется application/json.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/unsupported-media-type",
+                  "title": "UnsupportedMediaType",
+                  "status": 415,
+                  "detail": "Для POST требуется application/json.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "UNSUPPORTED_MEDIA_TYPE",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "UnprocessableEntity": {
+        "description": "JSON корректен, но нарушает схему, возможности устройства, одноразовый код либо соответствие action/domain.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/validation-error",
+                  "title": "UnprocessableEntity",
+                  "status": 422,
+                  "detail": "JSON корректен, но нарушает схему, возможности устройства, одноразовый код либо соответствие action/domain.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "VALIDATION_ERROR",
+                  "requestId": "10000000-0000-4000-8000-000000000007",
+                  "errors": [
+                    {
+                      "field": "payload.enabled",
+                      "message": "Ожидается boolean."
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Превышен лимит запросов.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/rate-limited",
+                  "title": "TooManyRequests",
+                  "status": 429,
+                  "detail": "Превышен лимит запросов.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "RATE_LIMITED",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Внутренняя ошибка; подробности сопоставляются по requestId.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/internal-error",
+                  "title": "InternalError",
+                  "status": 500,
+                  "detail": "Внутренняя ошибка; подробности сопоставляются по requestId.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "INTERNAL_ERROR",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Нельзя надёжно проверить доступ/привязку или выполнить локальную транзакцию. Доступ не разрешается по умолчанию.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "examples": {
+              "error": {
+                "summary": "",
+                "value": {
+                  "type": "https://api.warmhouse.example/problems/dependency-unavailable",
+                  "title": "Unavailable",
+                  "status": 503,
+                  "detail": "Нельзя надёжно проверить доступ/привязку или выполнить локальную транзакцию. Доступ не разрешается по умолчанию.",
+                  "instance": "/api/v1/houses/10000000-0000-4000-8000-000000000001",
+                  "code": "DEPENDENCY_UNAVAILABLE",
+                  "requestId": "10000000-0000-4000-8000-000000000007"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "UserBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT внешнего IdP: проверяются iss, aud=warmhouse-api, exp, principal_type=user и scope. sub — владелец. Header X-Owner-Subject для пользователя запрещён."
+      },
+      "ServiceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT того же доверенного IdP: principal_type=service, client_id и scope. Не принимается как UserBearer. Всегда требует mTLS и совпадения аутентифицированного client_id с сертификатом по серверной конфигурации. execute-as-owner разрешён только automation."
+      },
+      "ServiceMTLS": {
+        "type": "mutualTLS",
+        "description": "Внутренний клиент подтверждает сертификат. Gateway удаляет внешние заголовки идентичности и передаёт только проверенный контекст по защищённому внутреннему соединению."
+      }
+    }
+  }
+}

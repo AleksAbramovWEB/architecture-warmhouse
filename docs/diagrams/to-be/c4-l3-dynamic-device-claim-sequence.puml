@@ -49,7 +49,7 @@ alt Идентичность и challenge подтверждены
   registry -> bus : DeviceRegistered.v1 через outbox
   bus -> bridge : DeviceRegistered.v1
   bridge -> mqtt : Включает рабочие topics по привязке\nи подтверждённой bindingVersion
-  user -> registry : GET claimId
+  user -> registry : GET профиль устройства?bindingVersion=...
   registry --> user : ACTIVE (канал может ещё устанавливаться)
 else Несоответствие, ошибка или тайм-аут
   bridge -> bus : DeviceClaimFailed.v1 через outbox
