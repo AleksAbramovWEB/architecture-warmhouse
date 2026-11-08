@@ -1,6 +1,6 @@
 # Project_template
 
-Это шаблон для решения проектной работы. Структура этого файла повторяет структуру заданий. Заполняйте его по мере работы над решением.
+Решение проектной работы «Тёплый дом»: архитектура As-Is и To-Be, логическая модель данных, API-контракты и запускаемый учебный контур датчиков.
 
 # Задание 1. Анализ и планирование
 
@@ -503,57 +503,89 @@ python3 -m venv /tmp/warmhouse-api-venv
 
 # Задание 5. Работа с docker и docker-compose
 
-Перейдите в apps.
+### 1. Реализация
 
-Там находится приложение-монолит для работы с датчиками температуры. В README.md описано как запустить решение.
+[Учебный контур в apps](apps/README.md) включает исходный Go-монолит, PostgreSQL 16 и новый [temperature-api](apps/temperature-api/build.gradle.kts) на **Java 21 и Spring Boot 3.5.16**. Симулятор представляет удалённый датчик в учебном контуре. Каталог `apps/smart_home`, включая Dockerfile и `init.sql`, используется без изменений.
 
-Вам нужно:
+| Сервис | Назначение | Адрес по умолчанию |
+| --- | --- | --- |
+| `app` | HTTP API создания и чтения датчиков | http://localhost:8080 |
+| `temperature-api` | Генерация новых показаний, порт контейнера `8081` | http://localhost:8081 |
+| `postgres` | База `smarthome`, постоянный именованный том | `postgres:5432` внутри Compose-сети |
 
-1) сделать простое приложение temperature-api на любом удобном для вас языке программирования, которое при запросе /temperature?location= будет отдавать рандомное значение температуры.
+Симулятор поддерживает `GET /temperature?location=...` и `GET /temperature/{sensorId}`. Второй маршрут использует существующий клиент монолита. Дополнительно доступны query-параметры `sensorId`/`sensor_id` и `GET /health`.
 
-Locations - название комнаты, sensorId - идентификатор названия комнаты
+Сопоставление из условия: `1 ↔ Living Room`, `2 ↔ Bedroom`, `3 ↔ Kitchen`. Неизвестный ID сохраняется, а расположение становится `Unknown`; для неизвестной комнаты без ID назначается `sensor_id="0"`. Без параметров возвращаются `0` и `Unknown`. JSON совместим с `TemperatureResponse`: `value`, `unit`, `timestamp`, `location`, `status`, `sensor_id`, `sensor_type`, `description`.
 
-```
-	// If no location is provided, use a default based on sensor ID
-	if location == "" {
-		switch sensorID {
-		case "1":
-			location = "Living Room"
-		case "2":
-			location = "Bedroom"
-		case "3":
-			location = "Kitchen"
-		default:
-			location = "Unknown"
-		}
-	}
+Температура случайна в диапазоне **15.00–30.00 °C** с шагом 0.01. Два соседних значения одной пары `(sensor_id, location)` в рамках работающего симулятора гарантированно различаются; выбор нового значения выполняется атомарно через `ConcurrentHashMap.compute`. Ответы содержат актуальное UTC-время, `status="active"` и `Cache-Control: no-store`.
 
-	// If no sensor ID is provided, generate one based on location
-	if sensorID == "" {
-		switch location {
-		case "Living Room":
-			sensorID = "1"
-		case "Bedroom":
-			sensorID = "2"
-		case "Kitchen":
-			sensorID = "3"
-		default:
-			sensorID = "0"
-		}
-	}
+Исходный монолит при создании датчика возвращает начальную запись из PostgreSQL (`value=0`, `status="inactive"`). Чтение списка или отдельного датчика получает актуальное показание из симулятора. Имя, расположение и прочие метаданные остаются из PostgreSQL; показания подставляются в ответ без записи при чтении.
+
+В Java-приложении HTTP-обработку выполняет [TemperatureController](apps/temperature-api/src/main/java/ru/warmhouse/temperature/TemperatureController.java), генерацию и сопоставление — [TemperatureService](apps/temperature-api/src/main/java/ru/warmhouse/temperature/TemperatureService.java). [TemperatureResponse](apps/temperature-api/src/main/java/ru/warmhouse/temperature/TemperatureResponse.java) — Java record с JSON-полями, совместимыми с клиентом монолита; используются `BigDecimal` и `Instant`.
+
+### 2. Docker и PostgreSQL
+
+- [Dockerfile симулятора](apps/temperature-api/Dockerfile) использует многоэтапную сборку: Gradle 8.14.3 с Kotlin DSL и JDK 21 выполняют `gradle build`, JRE 21 запускает исполняемый Spring Boot JAR от непривилегированного UID.
+- [Dockerfile монолита](apps/smart_home/Dockerfile) используется из исходного шаблона.
+- [docker-compose.yml](apps/docker-compose.yml) задаёт три сервиса, общую сеть, healthcheck, ожидание готовности зависимостей и постоянный том `postgres_data`.
+- Логин и пароль хранятся в локальном `apps/.env`, подключённом к PostgreSQL и монолиту через `env_file`. В Git включён только [шаблон .env.example](apps/.env.example). Команда запуска монолита переносит реквизиты в `PGUSER`/`PGPASSWORD`; пароля в `DATABASE_URL` нет.
+- [smart_home/init.sql](apps/smart_home/init.sql) монтируется в `/docker-entrypoint-initdb.d/001-init.sql:ro`. В `.env` задано `POSTGRES_DB=postgres`, а исходный SQL сам создаёт `smarthome`, подключается к ней и создаёт таблицу и индексы.
+
+PostgreSQL проверяется по TCP, чтобы приложение не запустилось на временном сервере первичной инициализации. Монолит стартует после `service_healthy` базы и симулятора. Инициализация SQL выполняется на новом томе; обычный `docker compose down` сохраняет данные. Подробности запуска — в [apps/README.md](apps/README.md).
+
+### 3. Запуск
+
+Перед первым запуском из корня репозитория:
+
+```bash
+cp -n apps/.env.example apps/.env
 ```
 
-2) Приложение следует упаковать в Docker и добавить в docker-compose. Порт по умолчанию должен быть 8081
+Задайте в `apps/.env` свой `POSTGRES_USER` и непустой `POSTGRES_PASSWORD`, затем:
 
-3) Кроме того для smart_home приложения требуется база данных - добавьте в docker-compose файл настройки для запуска postgres с указанием скрипта инициализации ./smart_home/init.sql
+```bash
+./apps/init.sh
+```
 
-Для проверки можно использовать Postman коллекцию smarthome-api.postman_collection.json и вызвать:
+Скрипт собирает образы, запускает сервисы, ждёт успешных healthcheck и выводит их адреса. Вариант вручную:
 
-- Create Sensor
-- Get All Sensors
+```bash
+cd apps
+docker compose up --build --detach --wait --wait-timeout 120
+docker compose ps
+```
 
-Должно при каждом вызове отображаться разное значение температуры
+Для других портов из корня можно вызвать `APP_PORT=9080 TEMPERATURE_PORT=9081 ./apps/init.sh`. Java, Gradle и Go на хосте не требуются; нужен Docker с Compose v2, поддерживающим `up --wait`.
 
-Ревьюер будет проверять точно так же.
+### 4. Проверка как на ревью
 
+Импортируйте [исходную Postman-коллекцию](apps/smarthome-api.postman_collection.json), выполните **Create Sensor**, затем несколько раз **Get All Sensors**. При стандартных портах адреса коллекции работают без изменений.
 
+Тот же сценарий из терминала:
+
+```bash
+curl --fail-with-body -X POST http://localhost:8080/api/v1/sensors \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Living Room Temperature","type":"temperature","location":"Living Room","unit":"°C"}'
+curl --fail-with-body http://localhost:8080/api/v1/sensors
+curl --fail-with-body http://localhost:8080/api/v1/sensors
+```
+
+Первый ответ — `201` с ID и начальными значениями из БД. Ответы списка — `200` с меняющимся `value`, актуальным `last_updated` и статусом `active` для этого датчика.
+
+Прямой запрос симулятору:
+
+```bash
+curl --fail-with-body --get --data-urlencode 'location=Living Room' http://localhost:8081/temperature
+curl --fail-with-body http://localhost:8081/temperature/1
+```
+
+Автоматическая проверка после запуска Compose, из корня:
+
+```bash
+python3 tools/smoke_sensors.py
+```
+
+[Smoke-скрипт](tools/smoke_sensors.py) использует запросы создания и списка из исходной Postman-коллекции. Проверяет четыре датчика, три повторных чтения, ID за пределами `1..3` и отдельный датчик. Расположение со спецсимволами проверяет прямым запросом к Temperature API. После проверки удаляет только собственные записи. Для других портов укажите `--base-url` и `--temperature-url`.
+
+[JUnit-тесты симулятора](apps/temperature-api/src/test/java/ru/warmhouse/temperature) проверяют маршруты Spring MVC, сопоставление комнат/ID, JSON-контракт, диапазон и неповторяемость показаний. Они запускаются при сборке образа через `gradle build`.
